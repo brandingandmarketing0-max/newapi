@@ -70,8 +70,17 @@ Optional:
 
 - ✅ **No 30-second timeout** - Railway allows 5-10 minute requests
 - ✅ **Traditional Node.js** - Full Express.js server
-- ✅ **Cron jobs work** - node-cron runs on Railway
+- ✅ **Cron jobs work** - Both node-cron (in service) and Railway Cron service supported
 - ✅ **File system access** - Can download/upload files
+
+## ⏰ Cron Jobs
+
+**Two options for cron jobs:**
+
+1. **node-cron (Current)**: Built into main service, requires service to stay running
+2. **Railway Cron Service (Recommended)**: Separate service, more cost-effective
+
+See `RAILWAY_CRON_SETUP.md` for Railway Cron service setup.
 
 ## 🔧 Local Development
 

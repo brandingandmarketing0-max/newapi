@@ -67,6 +67,53 @@ CLOUDFLARE_R2_BUCKET_NAME=your_bucket_name
 CLOUDFLARE_R2_PUBLIC_URL=https://your-bucket.r2.dev
 ```
 
+## ⏱️ Rate Limiting Configuration (Recommended)
+
+To avoid getting blocked by Instagram, configure these variables:
+
+| Variable | Default | Description | Example |
+|----------|---------|-------------|---------|
+| `MIN_TIME_BETWEEN_JOBS_MS` | `300000` (5 minutes) | Minimum time between Instagram API calls in milliseconds | `300000` = 5 min, `600000` = 10 min |
+| `DAILY_CRON_SCHEDULE` | `0 0 * * *` (midnight) | Cron schedule for daily tracking job | `0 2 * * *` = 2 AM daily |
+| `REFRESH_CRON_SCHEDULE` | `0 */12 * * *` (every 12 hours) | Cron schedule for periodic refresh | `0 */6 * * *` = every 6 hours |
+
+**Important Rate Limiting Notes:**
+- ⚠️ **Instagram has strict rate limits** - Default 5 minutes between jobs is safer than 3 minutes
+- 🚫 **Rate limit errors trigger exponential backoff** - System automatically increases delays after errors
+- 📊 **Monitor `/queue/status` endpoint** - Check rate limit status and queue health
+- 🔄 **Cron jobs respect rate limits** - All jobs go through the queue system automatically
+
+**Example Configuration (Conservative - Recommended):**
+```env
+MIN_TIME_BETWEEN_JOBS_MS=600000  # 10 minutes between jobs (very safe)
+DAILY_CRON_SCHEDULE=0 2 * * *    # Run daily at 2 AM
+REFRESH_CRON_SCHEDULE=0 */12 * * *  # Refresh every 12 hours
+```
+
+**Example Configuration (Aggressive - Use with Caution):**
+```env
+MIN_TIME_BETWEEN_JOBS_MS=180000  # 3 minutes between jobs (risky)
+DAILY_CRON_SCHEDULE=0 0 * * *    # Run daily at midnight
+REFRESH_CRON_SCHEDULE=0 */6 * * *   # Refresh every 6 hours (risky)
+```
+
+**Cron Schedule Format:**
+```
+* * * * *
+│ │ │ │ │
+│ │ │ │ └─── Day of week (0-7, Sunday = 0 or 7)
+│ │ │ └───── Month (1-12)
+│ │ └─────── Day of month (1-31)
+│ └───────── Hour (0-23)
+└─────────── Minute (0-59)
+```
+
+Examples:
+- `0 0 * * *` = Every day at midnight (00:00)
+- `0 */6 * * *` = Every 6 hours (00:00, 06:00, 12:00, 18:00)
+- `0 */12 * * *` = Every 12 hours (00:00, 12:00)
+- `0 2 * * *` = Every day at 2 AM
+
 ## ✅ Quick Checklist
 
 ### Railway:

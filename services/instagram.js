@@ -86,11 +86,25 @@ const fetchInstagramProfileData = async (username, retries = 3) => {
 
       response = await fetch(url, { headers });
       
+      // Handle rate limiting (429 Too Many Requests)
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : delayMs;
+        console.warn(`🚫 [Instagram] Rate limit (429) for ${username}. Retry-After: ${retryAfter || 'not specified'}s`);
+        if (attempt < retries - 1) {
+          console.warn(`⏳ [Instagram] Waiting ${waitTime/1000}s before retry ${attempt + 2}/${retries}...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
+        }
+        throw new Error(`Instagram rate limit (429): Too many requests. Please wait before trying again.`);
+      }
+      
+      // Handle 401 (authentication/rate limit related)
       if (response.status === 401) {
         const errorData = await response.json().catch(() => ({}));
         if (errorData.message?.includes("wait a few minutes") || errorData.require_login) {
           if (attempt < retries - 1) {
-            console.warn(`Rate limited by Instagram for ${username}. Will retry after delay...`);
+            console.warn(`⚠️  [Instagram] Rate limited by Instagram for ${username}. Will retry after delay...`);
             continue;
           }
           throw new Error(`Instagram rate limit: ${errorData.message || 'Please wait a few minutes before trying again'}`);
@@ -99,7 +113,11 @@ const fetchInstagramProfileData = async (username, retries = 3) => {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`Instagram profile lookup failed with ${response.status}: ${text}`);
+        // Check if response indicates rate limiting
+        if (response.status === 403 || (text.includes('rate limit') || text.includes('too many'))) {
+          throw new Error(`Instagram rate limit: ${text.substring(0, 200)}`);
+        }
+        throw new Error(`Instagram profile lookup failed with ${response.status}: ${text.substring(0, 200)}`);
       }
       
       // Success - parse JSON and break out of retry loop

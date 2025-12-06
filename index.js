@@ -18,7 +18,13 @@ const profilesRouter = require("./routes/profiles");
 const reelsRouter = require("./routes/reels");
 
 // Import rate limit constant for logging
-const MIN_TIME_BETWEEN_JOBS = 3 * 60 * 1000; // 3 minutes
+const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
+
+// Configurable cron schedules
+// Daily cron: Runs at 12 AM (midnight) every night - "0 0 * * *"
+// Refresh cron: Optional periodic refresh (default: every 12 hours)
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "0 0 * * *"; // 12 AM (midnight) daily
+const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -54,10 +60,10 @@ app.get("/", (req, res) => {
   });
 });
 
-// Cron job: Track all profiles every 24 hours (daily at midnight)
+// Cron job: Track all profiles daily at 12 AM (midnight) every night
 // Uses queue system to handle rate limiting
-cron.schedule("0 0 * * *", async () => {
-  console.log("\n⏰ [CRON] Daily tracking job started...");
+cron.schedule(DAILY_CRON_SCHEDULE, async () => {
+  console.log("\n⏰ [CRON] Daily tracking job started at 12 AM (midnight)...");
   
   try {
     // Get all tracked profiles
@@ -96,9 +102,15 @@ cron.schedule("0 0 * * *", async () => {
   }
 });
 
-// Also run every 6 hours to keep data fresh (optional - can be adjusted)
-cron.schedule("0 */6 * * *", async () => {
-  console.log("\n⏰ [CRON] 6-hour refresh job started...");
+// Optional periodic refresh job to keep data fresh (configurable schedule, default: every 12 hours)
+// Can be disabled by setting REFRESH_CRON_SCHEDULE to empty string or a far future date
+// More conservative than 6 hours to avoid rate limits
+if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
+  cron.schedule(REFRESH_CRON_SCHEDULE, async () => {
+  const scheduleHours = REFRESH_CRON_SCHEDULE.includes("*/") 
+    ? REFRESH_CRON_SCHEDULE.match(/\*\/(\d+)/)?.[1] || "12"
+    : "12";
+  console.log(`\n⏰ [CRON] ${scheduleHours}-hour refresh job started...`);
   
   try {
     const { data: profiles, error } = await supabase
@@ -106,10 +118,15 @@ cron.schedule("0 */6 * * *", async () => {
       .select("username");
     
     if (error || !profiles || profiles.length === 0) {
+      if (error) {
+        console.error(`❌ [CRON] Error fetching profiles:`, error.message);
+      } else {
+        console.log(`ℹ️  [CRON] No profiles to refresh`);
+      }
       return;
     }
     
-    console.log(`📊 [CRON] Adding ${profiles.length} profile(s) to queue for 6-hour refresh...`);
+    console.log(`📊 [CRON] Adding ${profiles.length} profile(s) to queue for ${scheduleHours}-hour refresh...`);
     
     for (const profile of profiles) {
       try {
@@ -120,11 +137,14 @@ cron.schedule("0 */6 * * *", async () => {
     }
     
     processQueue();
-    console.log(`\n✅ [CRON] 6-hour refresh: All profiles added to queue.`);
+    console.log(`\n✅ [CRON] ${scheduleHours}-hour refresh: All profiles added to queue.`);
   } catch (err) {
-    console.error("❌ [CRON] Fatal error in 6-hour cron job:", err.message);
+    console.error(`❌ [CRON] Fatal error in ${scheduleHours}-hour cron job:`, err.message);
   }
-});
+  });
+} else {
+  console.log(`ℹ️  [CRON] Periodic refresh job disabled (REFRESH_CRON_SCHEDULE not set or empty)`);
+}
 
 // Handle command line arguments
 const args = process.argv.slice(2);
@@ -143,9 +163,15 @@ if (command === "serve") {
     console.log(`📋 Queue status: http://${host}:${port}/queue/status`);
     console.log(`📋 API docs: http://${host}:${port}/`);
     console.log(`\n⏰ Cron jobs scheduled:`);
-    console.log(`   - Daily tracking: Runs at midnight (00:00)`);
-    console.log(`   - 6-hour refresh: Runs every 6 hours`);
+    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (12 AM / midnight every night)`);
+    if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
+      console.log(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
+    } else {
+      console.log(`   - Periodic refresh: DISABLED (only daily at midnight will run)`);
+    }
     console.log(`\n🔄 Queue system: Active with ${MIN_TIME_BETWEEN_JOBS / 1000 / 60} minute rate limiting`);
+    console.log(`   - Rate limit configurable via MIN_TIME_BETWEEN_JOBS_MS env var (default: 300000ms = 5 minutes)`);
+    console.log(`   - Exponential backoff enabled for rate limit errors`);
     console.log(`   - Jobs run immediately when created (respects rate limits)`);
     console.log(`   - Queue processes automatically in background`);
     console.log(`\n✅ Server ready!`);
