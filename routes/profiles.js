@@ -6,6 +6,39 @@ const { trackProfile } = require("../services/tracking");
 const { fetchReelData } = require("../services/instagram");
 const { addJob } = require("../services/queue");
 
+// Image proxy endpoint to bypass CORS
+router.get("/proxy-image", async (req, res) => {
+  const imageUrl = req.query.url;
+  
+  if (!imageUrl) {
+    return res.status(400).json({ error: "Missing url parameter" });
+  }
+
+  try {
+    const response = await fetch(imageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Referer': 'https://www.instagram.com/',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+      }
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: "Failed to fetch image" });
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const buffer = await response.arrayBuffer();
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+    res.send(Buffer.from(buffer));
+  } catch (error) {
+    console.error('[Image Proxy] Error:', error.message);
+    res.status(500).json({ error: "Failed to proxy image", details: error.message });
+  }
+});
+
 const extractShortcode = (input) => {
   if (!input || typeof input !== "string") return null;
   const trimmed = input.trim();
@@ -304,40 +337,46 @@ router.get("/tracking/:tracking_id", async (req, res) => {
 
   // Use daily metrics if available (more accurate for daily growth), otherwise use delta
   // ALWAYS prefer daily metrics over delta table for followers_diff (even if delta is 0)
-  let finalDelta = delta;
+  let finalDelta = delta || {
+    followers_diff: 0,
+    following_diff: 0,
+    media_diff: 0,
+    clips_diff: 0
+  };
+  
   if (dailyMetrics) {
     console.log(`\n📊 [API] Found daily metrics for tracking ${tracking_id} (date: ${dailyMetrics.date})`);
     console.log(`   Daily metrics followers_delta: ${dailyMetrics.followers_delta?.toLocaleString() ?? 'null/undefined'} (type: ${typeof dailyMetrics.followers_delta})`);
     console.log(`   Daily metrics followers_open: ${dailyMetrics.followers_open?.toLocaleString() || 0}`);
     console.log(`   Daily metrics followers_close: ${dailyMetrics.followers_close?.toLocaleString() || 0}`);
     
-    // Calculate delta from daily metrics if followers_delta is 0 or null
+    // Calculate delta from daily metrics if followers_delta is null/undefined
     // This matches what the graph uses (followers_close - followers_open)
     let dailyFollowersDelta = dailyMetrics.followers_delta;
     
-    // If followers_delta is 0 or null, calculate it from open/close (same as graph)
-    if ((dailyFollowersDelta === null || dailyFollowersDelta === undefined || dailyFollowersDelta === 0) 
+    // If followers_delta is null/undefined, calculate it from open/close (same as graph)
+    if ((dailyFollowersDelta === null || dailyFollowersDelta === undefined) 
         && dailyMetrics.followers_open !== null && dailyMetrics.followers_close !== null) {
       dailyFollowersDelta = dailyMetrics.followers_close - dailyMetrics.followers_open;
       console.log(`   ⚠️  followers_delta was ${dailyMetrics.followers_delta}, calculating from open/close: ${dailyMetrics.followers_close} - ${dailyMetrics.followers_open} = ${dailyFollowersDelta}`);
     }
     
-    // Use 0 as fallback if still null/undefined
+    // If still null/undefined, use 0
     if (dailyFollowersDelta === null || dailyFollowersDelta === undefined) {
       dailyFollowersDelta = 0;
     }
     
     console.log(`   📊 Using dailyFollowersDelta: ${dailyFollowersDelta?.toLocaleString() || 0}`);
     
-    // Create a delta object from daily metrics
+    // Create a delta object from daily metrics (always include followers_diff)
     finalDelta = {
-      ...delta,
+      ...finalDelta,
       followers_diff: dailyFollowersDelta, // ALWAYS use daily metrics value (calculated if needed)
-      // Keep other deltas from the latest delta record if available
-      following_diff: delta?.following_diff || 0,
-      media_diff: delta?.media_diff || 0,
-      clips_diff: delta?.clips_diff || 0,
-      created_at: dailyMetrics.created_at || delta?.created_at,
+      // Keep other deltas from the latest delta record if available, otherwise 0
+      following_diff: finalDelta.following_diff ?? 0,
+      media_diff: finalDelta.media_diff ?? 0,
+      clips_diff: finalDelta.clips_diff ?? 0,
+      created_at: dailyMetrics.created_at || finalDelta.created_at,
       source: 'daily_metrics'
     };
     
@@ -371,13 +410,26 @@ router.get("/tracking/:tracking_id", async (req, res) => {
     }
   }
 
+  // Always return a delta object, even if null/empty (frontend expects an object)
+  const responseDelta = finalDelta || {
+    followers_diff: 0,
+    following_diff: 0,
+    media_diff: 0,
+    clips_diff: 0
+  };
+
   const response = { 
     profile, 
     snapshot: snapshot || null, 
-    delta: finalDelta || null 
+    delta: responseDelta
   };
   
-  console.log(`✅ [API] Sending response for tracking ${tracking_id} (has snapshot: ${!!snapshot}, has delta: ${!!delta})`);
+  console.log(`✅ [API] Sending response for tracking ${tracking_id} (has snapshot: ${!!snapshot}, has delta: ${!!finalDelta})`);
+  if (responseDelta && responseDelta.followers_diff > 0) {
+    console.log(`   🟢 FOLLOWERS GROWTH IN RESPONSE: +${responseDelta.followers_diff.toLocaleString()}`);
+  } else if (!finalDelta) {
+    console.log(`   ⚠️  No delta found - returning default delta with 0 values`);
+  }
   res.json(response);
 });
 
@@ -502,7 +554,13 @@ router.get("/:username", async (req, res) => {
 
   // Use daily metrics if available (more accurate for daily growth), otherwise use delta
   // ALWAYS prefer daily metrics over delta table for followers_diff (even if delta is 0)
-  let finalDelta = delta;
+  let finalDelta = delta || {
+    followers_diff: 0,
+    following_diff: 0,
+    media_diff: 0,
+    clips_diff: 0
+  };
+  
   if (dailyMetrics) {
     console.log(`\n📊 [API] Found daily metrics for ${username} (date: ${dailyMetrics.date})`);
     console.log(`   Daily metrics followers_delta: ${dailyMetrics.followers_delta?.toLocaleString() ?? 'null/undefined'} (type: ${typeof dailyMetrics.followers_delta})`);
@@ -513,29 +571,29 @@ router.get("/:username", async (req, res) => {
     // This matches what the graph uses (followers_close - followers_open)
     let dailyFollowersDelta = dailyMetrics.followers_delta;
     
-    // If followers_delta is 0 or null, calculate it from open/close (same as graph)
-    if ((dailyFollowersDelta === null || dailyFollowersDelta === undefined || dailyFollowersDelta === 0) 
+    // If followers_delta is null/undefined, calculate it from open/close (same as graph)
+    if ((dailyFollowersDelta === null || dailyFollowersDelta === undefined) 
         && dailyMetrics.followers_open !== null && dailyMetrics.followers_close !== null) {
       dailyFollowersDelta = dailyMetrics.followers_close - dailyMetrics.followers_open;
       console.log(`   ⚠️  followers_delta was ${dailyMetrics.followers_delta}, calculating from open/close: ${dailyMetrics.followers_close} - ${dailyMetrics.followers_open} = ${dailyFollowersDelta}`);
     }
     
-    // Use 0 as fallback if still null/undefined
+    // If still null/undefined, use 0
     if (dailyFollowersDelta === null || dailyFollowersDelta === undefined) {
       dailyFollowersDelta = 0;
     }
     
     console.log(`   📊 Using dailyFollowersDelta: ${dailyFollowersDelta?.toLocaleString() || 0}`);
     
-    // Create a delta object from daily metrics
+    // Create a delta object from daily metrics (always include followers_diff)
     finalDelta = {
-      ...delta,
+      ...finalDelta,
       followers_diff: dailyFollowersDelta, // ALWAYS use daily metrics value (calculated if needed)
-      // Keep other deltas from the latest delta record if available
-      following_diff: delta?.following_diff || 0,
-      media_diff: delta?.media_diff || 0,
-      clips_diff: delta?.clips_diff || 0,
-      created_at: dailyMetrics.created_at || delta?.created_at,
+      // Keep other deltas from the latest delta record if available, otherwise 0
+      following_diff: finalDelta.following_diff ?? 0,
+      media_diff: finalDelta.media_diff ?? 0,
+      clips_diff: finalDelta.clips_diff ?? 0,
+      created_at: dailyMetrics.created_at || finalDelta.created_at,
       source: 'daily_metrics' // Mark that this came from daily metrics
     };
     
@@ -582,15 +640,25 @@ router.get("/:username", async (req, res) => {
     console.log(`\n📊 [API] No delta found for ${username} (first tracking or no previous snapshot)`);
   }
 
+  // Always return a delta object, even if null/empty (frontend expects an object)
+  const responseDelta = finalDelta || {
+    followers_diff: 0,
+    following_diff: 0,
+    media_diff: 0,
+    clips_diff: 0
+  };
+
   const response = { 
     profile, 
     snapshot: snapshot || null, 
-    delta: finalDelta || null 
+    delta: responseDelta
   };
   
   console.log(`✅ [API] Sending response for ${username} (has snapshot: ${!!snapshot}, has delta: ${!!finalDelta})`);
-  if (finalDelta && finalDelta.followers_diff > 0) {
-    console.log(`   🟢 FOLLOWERS GROWTH IN RESPONSE: +${finalDelta.followers_diff.toLocaleString()}`);
+  if (responseDelta && responseDelta.followers_diff > 0) {
+    console.log(`   🟢 FOLLOWERS GROWTH IN RESPONSE: +${responseDelta.followers_diff.toLocaleString()}`);
+  } else if (!finalDelta) {
+    console.log(`   ⚠️  No delta found - returning default delta with 0 values`);
   }
   res.json(response);
 });
