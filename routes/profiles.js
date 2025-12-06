@@ -709,8 +709,7 @@ router.get("/:username/reels", async (req, res) => {
       }
       
       return reelWithGrowth;
-    })
-  );
+    });
   
   // Log summary
   const reelsWithNonZeroGrowth = reelsWithGrowth.filter(r => 
@@ -891,8 +890,7 @@ router.get("/tracking/:tracking_id/reels", async (req, res) => {
           rate: parseFloat(viewerToFollowerRatio.toFixed(2)) // Viewer to Follower Ratio as percentage
         }
       };
-    })
-  );
+    });
   
   console.log(`✅ [API] Using stored growth deltas for all ${reelsWithGrowth.length} reels`);
   console.log(`📤 [API] Returning ${reelsWithGrowth.length} reels to frontend`);

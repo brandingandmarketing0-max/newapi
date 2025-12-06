@@ -1,4 +1,12 @@
-require("dotenv").config();
+// Load .env file only if it exists (for local development)
+// On Railway, environment variables are set in the dashboard
+const fs = require("fs");
+if (fs.existsSync(".env")) {
+  require("dotenv").config();
+  console.log("✅ Loaded .env file for local development");
+} else if (!process.env.RAILWAY_ENVIRONMENT) {
+  console.log("ℹ️  No .env file found. Using environment variables from system.");
+}
 
 const express = require("express");
 const cors = require("cors");

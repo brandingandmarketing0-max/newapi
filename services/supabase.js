@@ -5,8 +5,22 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "https://mhtftjpddyottiifioku.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_KEY) {
-  console.error("❌ SUPABASE_KEY is missing! Set SUPABASE_KEY or SUPABASE_ANON_KEY in .env");
-  process.exit(1);
+  // Check if we're on Railway (Railway sets PORT automatically)
+  const isRailway = process.env.PORT && process.env.NODE_ENV === 'production';
+  const envSource = isRailway ? "Railway dashboard (Variables tab)" : ".env file";
+  
+  console.error(`❌ SUPABASE_KEY is missing!`);
+  console.error(`   Set SUPABASE_KEY or SUPABASE_ANON_KEY in ${envSource}`);
+  
+  if (isRailway) {
+    console.error(`   📍 On Railway: Go to your service → Variables tab → Add SUPABASE_KEY`);
+    console.error(`   📍 Also add SUPABASE_URL if not already set`);
+    // Don't exit on Railway - let it show in logs and Railway will handle restart
+    throw new Error("SUPABASE_KEY environment variable is required. Set it in Railway dashboard → Variables tab");
+  } else {
+    console.error(`   📍 For local dev: Create .env file with SUPABASE_KEY`);
+    process.exit(1);
+  }
 }
 
 console.log(`🔗 Connecting to Supabase: ${SUPABASE_URL}`);
