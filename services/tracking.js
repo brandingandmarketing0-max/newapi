@@ -197,14 +197,38 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         }
       }
     } else {
-      // Normal flow: upsert by username
-      const { data: upsertedProfile, error: upsertError } = await supabase
-      .from("ig_profiles")
-      .upsert(profileData, { onConflict: "username" })
-      .select()
-      .single();
-      profile = upsertedProfile;
-      profileError = upsertError;
+      // Normal flow: check if exists, then update or insert (no ON CONFLICT needed)
+      // First, check if profile exists by username
+      const { data: existingProfile, error: checkError } = await supabase
+        .from("ig_profiles")
+        .select("*")
+        .eq("username", igData.username)
+        .maybeSingle();
+      
+      if (checkError) {
+        profileError = checkError;
+      } else if (existingProfile) {
+        // Profile exists - update it
+        console.log(`📝 [${username}] Profile exists, updating...`);
+        const { data: updatedProfile, error: updateError } = await supabase
+          .from("ig_profiles")
+          .update(profileData)
+          .eq("id", existingProfile.id)
+          .select()
+          .single();
+        profile = updatedProfile;
+        profileError = updateError;
+      } else {
+        // Profile doesn't exist - insert it
+        console.log(`➕ [${username}] Profile doesn't exist, creating new...`);
+        const { data: insertedProfile, error: insertError } = await supabase
+          .from("ig_profiles")
+          .insert(profileData)
+          .select()
+          .single();
+        profile = insertedProfile;
+        profileError = insertError;
+      }
     }
 
     if (profileError) {

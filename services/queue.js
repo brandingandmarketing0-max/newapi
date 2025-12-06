@@ -56,9 +56,17 @@ const addJob = async (username, immediate = false, customTrackingId = null, user
   jobQueue.push(job);
   console.log(`📋 [QUEUE] Added job for ${username} to queue (immediate: ${immediate}, queue size: ${jobQueue.length})`);
 
-  // If immediate and not processing, try to process immediately
-  if (immediate && !isProcessing) {
-    processQueue();
+  // Auto-start processing if:
+  // 1. Job is marked as immediate, OR
+  // 2. Queue was empty before this job (first job) and not currently processing
+  const wasEmpty = jobQueue.length === 1; // This is the first job
+  
+  if (immediate || (wasEmpty && !isProcessing)) {
+    console.log(`🔄 [QUEUE] Auto-starting queue processing (immediate: ${immediate}, wasEmpty: ${wasEmpty})`);
+    // Use setImmediate to ensure it runs after the current execution
+    setImmediate(() => {
+      processQueue();
+    });
   }
 
   return jobPromise;

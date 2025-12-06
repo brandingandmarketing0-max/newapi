@@ -21,9 +21,9 @@ const reelsRouter = require("./routes/reels");
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
 
 // Configurable cron schedules
-// Daily cron: Runs at 1:15 AM IST every night - "15 1 * * *" (when TZ=Asia/Kolkata)
+// Daily cron: Runs at 1:55 AM IST every night - "55 1 * * *" (when TZ=Asia/Kolkata)
 // Refresh cron: Optional periodic refresh (default: every 12 hours)
-const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "15 1 * * *"; // 1:15 AM IST daily
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "55 1 * * *"; // 1:55 AM IST daily
 const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
 // Timezone: Set to IST (Indian Standard Time) by default
@@ -184,6 +184,56 @@ app.post("/queue/process", (req, res) => {
   });
 });
 
+// Manual cron job trigger endpoint (for testing)
+app.post("/cron/trigger", async (req, res) => {
+  console.log(`\n🔧 [API] Manual cron job trigger requested`);
+  
+  try {
+    // Get all tracked profiles
+    const { data: profiles, error } = await supabase
+      .from("ig_profiles")
+      .select("username");
+    
+    if (error) {
+      console.error("❌ [API] Error fetching profiles:", error.message);
+      return res.status(500).json({ error: error.message });
+    }
+    
+    if (!profiles || profiles.length === 0) {
+      console.log("ℹ️  [API] No profiles to track");
+      return res.json({ message: "No profiles to track", profiles: 0 });
+    }
+    
+    console.log(`📊 [API] Adding ${profiles.length} profile(s) to queue...`);
+    
+    // Add all profiles to queue
+    let addedCount = 0;
+    for (const profile of profiles) {
+      try {
+        await addJob(profile.username, false);
+        addedCount++;
+        console.log(`📋 [API] Added ${profile.username} to queue`);
+      } catch (err) {
+        console.error(`❌ [API] Failed to add ${profile.username} to queue:`, err.message);
+      }
+    }
+    
+    // Start processing the queue
+    console.log(`🔄 [API] Calling processQueue() to start processing...`);
+    processQueue();
+    
+    res.json({
+      message: "Cron job triggered manually",
+      profilesAdded: addedCount,
+      totalProfiles: profiles.length,
+      queueStatus: getQueueStatus()
+    });
+  } catch (err) {
+    console.error("❌ [API] Error in manual cron trigger:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Cron schedule info endpoint - shows next refresh times
 app.get("/cron/schedule", (req, res) => {
   const now = new Date();
@@ -200,7 +250,7 @@ app.get("/cron/schedule", (req, res) => {
     schedules: {
       daily: {
         cron: DAILY_CRON_SCHEDULE,
-        description: "Daily refresh at 1:15 AM IST",
+        description: "Daily refresh at 1:55 AM IST",
         nextExecution: formatDateWithTimezone(nextDaily),
         nextExecutionIST: nextDaily ? new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" }) : null,
         enabled: true
@@ -212,7 +262,7 @@ app.get("/cron/schedule", (req, res) => {
         enabled: REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== ""
       }
     },
-    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 1:15 AM IST daily."
+    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 1:55 AM IST daily."
   });
 });
 
@@ -228,12 +278,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// Cron job: Track all profiles daily at 1:15 AM IST every night
+// Cron job: Track all profiles daily at 1:55 AM IST every night
 // Uses queue system to handle rate limiting
 // NOTE: Timezone is set to IST (Asia/Kolkata) = UTC+5:30
 const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
   const now = new Date();
-  console.log(`\n⏰ [CRON] Daily tracking job started at 1:15 AM IST...`);
+  console.log(`\n⏰ [CRON] Daily tracking job started at 1:55 AM IST...`);
   console.log(`📅 [CRON] Current time: ${now.toISOString()} (UTC)`);
   console.log(`📅 [CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
   console.log(`🌍 [CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
@@ -257,18 +307,69 @@ const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
     console.log(`📊 [CRON] Adding ${profiles.length} profile(s) to queue...`);
     
     // Add all profiles to queue (not immediate - will be processed in order with rate limiting)
-    for (const profile of profiles) {
+    let addedCount = 0;
+    let failedCount = 0;
+    
+    console.log(`📋 [CRON] Starting to add ${profiles.length} profiles to queue...`);
+    
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i];
       try {
+        console.log(`📋 [CRON] Attempting to add profile ${i + 1}/${profiles.length}: ${profile.username}`);
         await addJob(profile.username, false);
-        console.log(`📋 [CRON] Added ${profile.username} to queue`);
+        addedCount++;
+        console.log(`✅ [CRON] Successfully added ${profile.username} to queue (${addedCount}/${profiles.length})`);
       } catch (err) {
+        failedCount++;
         console.error(`❌ [CRON] Failed to add ${profile.username} to queue:`, err.message);
+        console.error(err.stack);
       }
     }
     
-    // Start processing the queue
-    console.log(`🔄 [CRON] Calling processQueue() to start processing...`);
-    processQueue();
+    console.log(`📊 [CRON] Summary: ${addedCount} added, ${failedCount} failed out of ${profiles.length} total`);
+    
+    // Get current queue status BEFORE processing
+    const queueStatusBefore = getQueueStatus();
+    console.log(`📊 [CRON] Queue status BEFORE processing: ${queueStatusBefore.queueSize} jobs pending, isProcessing: ${queueStatusBefore.isProcessing}`);
+    console.log(`📊 [CRON] Pending jobs: ${queueStatusBefore.pendingJobs.map(j => j.username).join(', ')}`);
+    
+    // CRITICAL: Start processing the queue immediately
+    console.log(`🔄 [CRON] Ensuring queue processing starts...`);
+    
+    // Force processQueue to run - use multiple methods to ensure it works
+    const startProcessing = () => {
+      const status = getQueueStatus();
+      if (status.queueSize > 0 && !status.isProcessing) {
+        console.log(`🚀 [CRON] Starting queue processing (${status.queueSize} jobs pending)...`);
+        processQueue().catch(err => {
+          console.error(`❌ [CRON] processQueue() error:`, err.message);
+        });
+      } else if (status.isProcessing) {
+        console.log(`✅ [CRON] Queue is already processing`);
+      } else {
+        console.log(`⚠️  [CRON] Queue is empty - no jobs to process`);
+      }
+    };
+    
+    // Call immediately
+    startProcessing();
+    
+    // Also call in next tick (setImmediate)
+    setImmediate(startProcessing);
+    
+    // Backup call after 500ms
+    setTimeout(startProcessing, 500);
+    
+    // Final backup after 2 seconds
+    setTimeout(() => {
+      const status = getQueueStatus();
+      if (status.queueSize > 0 && !status.isProcessing) {
+        console.log(`⚠️  [CRON] Queue still stuck after 2s - FORCING processQueue()...`);
+        processQueue().catch(err => {
+          console.error(`❌ [CRON] Forced processQueue() error:`, err.message);
+        });
+      }
+    }, 2000);
     
     console.log(`\n✅ [CRON] All profiles added to queue. Queue will process with rate limiting.`);
     
@@ -360,11 +461,11 @@ if (command === "serve") {
     console.log(`📋 Queue status: http://${host}:${port}/queue/status`);
     console.log(`📋 API docs: http://${host}:${port}/`);
     console.log(`\n⏰ Cron jobs scheduled:`);
-    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (1:15 AM IST every night)`);
+    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (1:55 AM IST every night)`);
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       console.log(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
     } else {
-      console.log(`   - Periodic refresh: DISABLED (only daily at 1:15 AM IST will run)`);
+      console.log(`   - Periodic refresh: DISABLED (only daily at 1:55 AM IST will run)`);
     }
     
     // Show next execution times

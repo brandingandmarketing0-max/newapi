@@ -32,12 +32,13 @@ This is a Railway.app-compatible version of the Instagram Tracking API.
    SUPABASE_KEY=your_supabase_service_role_key
    PORT=3001
    NODE_ENV=production
+   RAILWAY_API_URL=https://newapi-production-a8b3.up.railway.app
    ```
 
 5. **Get Your URL**:
    - Railway auto-deploys (1-2 minutes)
    - Go to **Settings** → **Domains**
-   - Copy your URL: `https://your-app.up.railway.app`
+   - Your API URL: `https://newapi-production-a8b3.up.railway.app`
 
 6. **Test**:
    ```bash
@@ -51,6 +52,7 @@ Required:
 - `SUPABASE_KEY` - Your Supabase service role key (or anon key)
 - `PORT` - Port to run on (Railway sets this automatically, but you can override)
 - `NODE_ENV` - Set to `production` for Railway
+- `RAILWAY_API_URL` - Your Railway API URL (default: `https://newapi-production-a8b3.up.railway.app`)
 
 Optional:
 - `CLOUDFLARE_R2_*` - If using R2 for reel storage (see services/r2-upload.js)

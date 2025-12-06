@@ -19,6 +19,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your_supabase_service_role_key
 PORT=3001
 NODE_ENV=production
+RAILWAY_API_URL=https://newapi-production-a8b3.up.railway.app
 ```
 
 **Important**: 
@@ -34,12 +35,13 @@ For local development, create a `.env` file in the `src-backup-railway/` folder:
 cd src-backup-railway
 ```
 
-Create `.env` file:
+Create `.env` file (or copy from `.env.example`):
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your_supabase_service_role_key
 PORT=3001
 NODE_ENV=development
+RAILWAY_API_URL=https://newapi-production-a8b3.up.railway.app
 ```
 
 **Important**: 
@@ -54,6 +56,7 @@ NODE_ENV=development
 | `SUPABASE_KEY` | Service role key (full access) | Supabase Dashboard → Settings → API → service_role key |
 | `PORT` | Server port | Railway sets automatically (optional to override) |
 | `NODE_ENV` | Environment | `production` for Railway, `development` for local |
+| `RAILWAY_API_URL` | Your Railway API URL | Railway Dashboard → Settings → Domains (default: `https://newapi-production-a8b3.up.railway.app`) |
 
 ## 🔐 Optional Variables (for R2 storage)
 
