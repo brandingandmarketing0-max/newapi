@@ -21,13 +21,14 @@ const reelsRouter = require("./routes/reels");
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
 
 // Configurable cron schedules
-// Daily cron: Runs at 12 AM (midnight) every night - "0 0 * * *"
+// Daily cron: Runs at 12:45 AM IST every night - "45 0 * * *" (when TZ=Asia/Kolkata)
 // Refresh cron: Optional periodic refresh (default: every 12 hours)
-const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "0 0 * * *"; // 12 AM (midnight) daily
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "45 0 * * *"; // 12:45 AM IST daily
 const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
-// Timezone: Railway uses UTC by default
-const TIMEZONE = process.env.TZ || "UTC";
+// Timezone: Set to IST (Indian Standard Time) by default
+// IST = UTC+5:30 (Asia/Kolkata)
+const TIMEZONE = process.env.TZ || "Asia/Kolkata";
 
 /**
  * Calculate next execution time for a cron schedule
@@ -43,14 +44,49 @@ function getNextCronExecution(cronSchedule) {
   
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
   
-  // For "0 0 * * *" (daily at midnight)
-  if (minute === "0" && hour === "0" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
-    const next = new Date(now);
-    next.setUTCHours(0, 0, 0, 0);
-    if (next <= now) {
-      next.setUTCDate(next.getUTCDate() + 1);
+  // For "0 0 * * *" (daily at midnight) or "20 0 * * *" (daily at 12:20 AM IST)
+  if (hour === "0" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    const cronMinute = parseInt(minute, 10);
+    
+    // Get current time in IST
+    const nowIST = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const nowUTC = new Date(now);
+    
+    // Create target time in IST (00:XX AM)
+    const targetIST = new Date(nowIST);
+    targetIST.setHours(0, cronMinute, 0, 0);
+    
+    // If target time has passed today, set for tomorrow
+    if (targetIST <= nowIST) {
+      targetIST.setDate(targetIST.getDate() + 1);
     }
-    return next;
+    
+    // Convert IST time to UTC
+    // IST is UTC+5:30, so subtract 5:30 to get UTC
+    const istHours = targetIST.getHours();
+    const istMinutes = targetIST.getMinutes();
+    
+    // Calculate UTC time: IST - 5:30
+    let utcHours = istHours - 5;
+    let utcMinutes = istMinutes - 30;
+    
+    if (utcMinutes < 0) {
+      utcMinutes += 60;
+      utcHours -= 1;
+    }
+    if (utcHours < 0) {
+      utcHours += 24;
+    }
+    
+    const nextUTC = new Date(nowUTC);
+    nextUTC.setUTCHours(utcHours, utcMinutes, 0, 0);
+    
+    // If the UTC time is in the past, it means we need the next day
+    if (nextUTC <= nowUTC) {
+      nextUTC.setUTCDate(nextUTC.getUTCDate() + 1);
+    }
+    
+    return nextUTC;
   }
   
   // For "0 */12 * * *" (every 12 hours)
@@ -146,12 +182,15 @@ app.get("/cron/schedule", (req, res) => {
   
   res.json({
     timezone: TIMEZONE,
+    timezoneInfo: "IST (Indian Standard Time) = UTC+5:30",
     currentTime: formatDateWithTimezone(now),
+    currentTimeIST: now.toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" }),
     schedules: {
       daily: {
         cron: DAILY_CRON_SCHEDULE,
-        description: "Daily refresh at 12 AM (midnight)",
+        description: "Daily refresh at 12:45 AM IST",
         nextExecution: formatDateWithTimezone(nextDaily),
+        nextExecutionIST: nextDaily ? new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" }) : null,
         enabled: true
       },
       refresh: {
@@ -161,7 +200,7 @@ app.get("/cron/schedule", (req, res) => {
         enabled: REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== ""
       }
     },
-    note: "All times are in UTC (Railway default). Use TZ environment variable to change timezone."
+    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 12:45 AM IST daily."
   });
 });
 
@@ -177,14 +216,15 @@ app.get("/", (req, res) => {
   });
 });
 
-// Cron job: Track all profiles daily at 12 AM (midnight) every night
+// Cron job: Track all profiles daily at 12:45 AM IST every night
 // Uses queue system to handle rate limiting
-// NOTE: Railway uses UTC timezone by default
+// NOTE: Timezone is set to IST (Asia/Kolkata) = UTC+5:30
 const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
   const now = new Date();
-  console.log(`\n⏰ [CRON] Daily tracking job started at 12 AM (midnight) UTC...`);
+  console.log(`\n⏰ [CRON] Daily tracking job started at 12:45 AM IST...`);
   console.log(`📅 [CRON] Current time: ${now.toISOString()} (UTC)`);
-  console.log(`🌍 [CRON] Timezone: ${TIMEZONE}`);
+  console.log(`📅 [CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
+  console.log(`🌍 [CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
   
   try {
     // Get all tracked profiles
@@ -307,25 +347,27 @@ if (command === "serve") {
     console.log(`📋 Queue status: http://${host}:${port}/queue/status`);
     console.log(`📋 API docs: http://${host}:${port}/`);
     console.log(`\n⏰ Cron jobs scheduled:`);
-    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (12 AM / midnight every night)`);
+    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (12:45 AM IST every night)`);
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       console.log(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
     } else {
-      console.log(`   - Periodic refresh: DISABLED (only daily at midnight will run)`);
+      console.log(`   - Periodic refresh: DISABLED (only daily at 12:45 AM IST will run)`);
     }
     
     // Show next execution times
-    console.log(`\n📅 Next execution times (${TIMEZONE} timezone):`);
+    console.log(`\n📅 Next execution times (${TIMEZONE} timezone - IST = UTC+5:30):`);
     const nextDaily = getNextCronExecution(DAILY_CRON_SCHEDULE);
     if (nextDaily) {
       const dailyTime = formatDateWithTimezone(nextDaily);
-      console.log(`   - Daily refresh: ${dailyTime.utc} (${dailyTime.relative})`);
+      const istTime = new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+      console.log(`   - Daily refresh: ${istTime} IST (${dailyTime.utc} UTC) - ${dailyTime.relative}`);
     }
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       const nextRefresh = getNextCronExecution(REFRESH_CRON_SCHEDULE);
       if (nextRefresh) {
         const refreshTime = formatDateWithTimezone(nextRefresh);
-        console.log(`   - Periodic refresh: ${refreshTime.utc} (${refreshTime.relative})`);
+        const istTime = new Date(nextRefresh).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+        console.log(`   - Periodic refresh: ${istTime} IST (${refreshTime.utc} UTC) - ${refreshTime.relative}`);
       }
     }
     console.log(`\n💡 Check /cron/schedule endpoint for detailed schedule info`);
