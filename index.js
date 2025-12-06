@@ -21,9 +21,9 @@ const reelsRouter = require("./routes/reels");
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
 
 // Configurable cron schedules
-// Daily cron: Runs at 1 AM IST every night - "0 1 * * *" (when TZ=Asia/Kolkata)
+// Daily cron: Runs at 1:15 AM IST every night - "15 1 * * *" (when TZ=Asia/Kolkata)
 // Refresh cron: Optional periodic refresh (default: every 12 hours)
-const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "0 1 * * *"; // 1 AM IST daily
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "15 1 * * *"; // 1:15 AM IST daily
 const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
 // Timezone: Set to IST (Indian Standard Time) by default
@@ -173,6 +173,17 @@ app.get("/queue/status", (req, res) => {
   res.json(status);
 });
 
+// Manual queue trigger endpoint (for debugging/stuck queues)
+app.post("/queue/process", (req, res) => {
+  console.log(`🔄 [API] Manual queue process triggered`);
+  processQueue();
+  const status = getQueueStatus();
+  res.json({
+    message: "Queue processing triggered",
+    status: status
+  });
+});
+
 // Cron schedule info endpoint - shows next refresh times
 app.get("/cron/schedule", (req, res) => {
   const now = new Date();
@@ -189,7 +200,7 @@ app.get("/cron/schedule", (req, res) => {
     schedules: {
       daily: {
         cron: DAILY_CRON_SCHEDULE,
-        description: "Daily refresh at 1 AM IST",
+        description: "Daily refresh at 1:15 AM IST",
         nextExecution: formatDateWithTimezone(nextDaily),
         nextExecutionIST: nextDaily ? new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" }) : null,
         enabled: true
@@ -201,7 +212,7 @@ app.get("/cron/schedule", (req, res) => {
         enabled: REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== ""
       }
     },
-    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 1 AM IST daily."
+    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 1:15 AM IST daily."
   });
 });
 
@@ -217,12 +228,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// Cron job: Track all profiles daily at 1 AM IST every night
+// Cron job: Track all profiles daily at 1:15 AM IST every night
 // Uses queue system to handle rate limiting
 // NOTE: Timezone is set to IST (Asia/Kolkata) = UTC+5:30
 const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
   const now = new Date();
-  console.log(`\n⏰ [CRON] Daily tracking job started at 1 AM IST...`);
+  console.log(`\n⏰ [CRON] Daily tracking job started at 1:15 AM IST...`);
   console.log(`📅 [CRON] Current time: ${now.toISOString()} (UTC)`);
   console.log(`📅 [CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
   console.log(`🌍 [CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
@@ -256,6 +267,7 @@ const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
     }
     
     // Start processing the queue
+    console.log(`🔄 [CRON] Calling processQueue() to start processing...`);
     processQueue();
     
     console.log(`\n✅ [CRON] All profiles added to queue. Queue will process with rate limiting.`);
@@ -348,11 +360,11 @@ if (command === "serve") {
     console.log(`📋 Queue status: http://${host}:${port}/queue/status`);
     console.log(`📋 API docs: http://${host}:${port}/`);
     console.log(`\n⏰ Cron jobs scheduled:`);
-    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (1 AM IST every night)`);
+    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (1:15 AM IST every night)`);
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       console.log(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
     } else {
-      console.log(`   - Periodic refresh: DISABLED (only daily at 1 AM IST will run)`);
+      console.log(`   - Periodic refresh: DISABLED (only daily at 1:15 AM IST will run)`);
     }
     
     // Show next execution times
@@ -385,7 +397,11 @@ if (command === "serve") {
     }
     
     // Start processing queue on server start (in case there are pending jobs)
-    processQueue();
+    // Use setTimeout to ensure server is fully started before processing
+    setTimeout(() => {
+      console.log(`🔄 [QUEUE] Starting queue processor on server startup...`);
+      processQueue();
+    }, 1000);
   });
 } else {
   // Default: just scrape a profile if username provided

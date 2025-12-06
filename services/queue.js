@@ -68,6 +68,8 @@ const addJob = async (username, immediate = false, customTrackingId = null, user
  * Process the queue with rate limiting
  */
 const processQueue = async () => {
+  console.log(`🔍 [QUEUE] processQueue() called - isProcessing: ${isProcessing}, queue size: ${jobQueue.length}, lastJobTime: ${lastJobTime}`);
+  
   if (isProcessing) {
     console.log(`⏸️  [QUEUE] Already processing, skipping`);
     return;
@@ -88,12 +90,14 @@ const processQueue = async () => {
   // Get next job
   const nextJob = jobQueue.find(job => !job.completed);
   if (!nextJob) {
-    console.log(`✅ [QUEUE] No pending jobs`);
+    console.log(`✅ [QUEUE] No pending jobs (all completed)`);
     return;
   }
+  
+  console.log(`📋 [QUEUE] Found next job: ${nextJob.username}, completed: ${nextJob.completed}, immediate: ${nextJob.immediate}`);
 
   // Check rate limiting with exponential backoff if we've hit rate limits recently
-  const timeSinceLastJob = Date.now() - lastJobTime;
+  const timeSinceLastJob = lastJobTime > 0 ? Date.now() - lastJobTime : Infinity; // If never ran, allow immediate start
   let baseWaitTime = MIN_TIME_BETWEEN_JOBS;
   
   // Apply exponential backoff if we've had recent rate limit errors
@@ -116,23 +120,33 @@ const processQueue = async () => {
   }
   
   const waitTime = Math.max(0, baseWaitTime - timeSinceLastJob);
+  
+  console.log(`⏱️  [QUEUE] Rate limit check: baseWaitTime=${baseWaitTime}ms, timeSinceLastJob=${timeSinceLastJob}ms, waitTime=${waitTime}ms, lastJobTime=${lastJobTime}`);
 
-  if (waitTime > 0) {
+  if (waitTime > 0 && lastJobTime > 0) {
     console.log(`⏳ [QUEUE] Rate limit: Waiting ${Math.round(waitTime / 1000)}s before processing ${nextJob.username} (last job was ${Math.round(timeSinceLastJob / 1000)}s ago)`);
     
     // Schedule job for later
     setTimeout(() => {
+      console.log(`⏰ [QUEUE] Scheduled timeout completed, calling processQueue() again`);
       processQueue();
     }, waitTime);
     return;
+  } else {
+    if (lastJobTime === 0) {
+      console.log(`🚀 [QUEUE] First job in queue - starting immediately (no rate limit delay needed)`);
+    } else {
+      console.log(`🚀 [QUEUE] Rate limit satisfied - starting job immediately (waited enough time)`);
+    }
   }
 
   // Process the job
+  console.log(`▶️  [QUEUE] About to process job for ${nextJob.username}...`);
   isProcessing = true;
   processingJob = nextJob;
   nextJob.completed = true;
 
-  console.log(`🚀 [QUEUE] Processing job for ${nextJob.username} (queue size: ${jobQueue.length - 1} remaining)`);
+  console.log(`🚀 [QUEUE] Processing job for ${nextJob.username} (queue size: ${jobQueue.filter(j => !j.completed).length} remaining)`);
 
   try {
     const startTime = Date.now();
