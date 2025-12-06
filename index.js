@@ -21,9 +21,9 @@ const reelsRouter = require("./routes/reels");
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
 
 // Configurable cron schedules
-// Daily cron: Runs at 1:55 AM IST every night - "55 1 * * *" (when TZ=Asia/Kolkata)
+// Daily cron: Runs at 2:15 AM IST every night - "15 2 * * *" (when TZ=Asia/Kolkata)
 // Refresh cron: Optional periodic refresh (default: every 12 hours)
-const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "55 1 * * *"; // 1:55 AM IST daily
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "15 2 * * *"; // 2:15 AM IST daily
 const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
 // Timezone: Set to IST (Indian Standard Time) by default
