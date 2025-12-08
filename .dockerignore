@@ -1,4 +1,3 @@
-node_modules
 .git
 *.md
 !README.md
@@ -9,4 +8,5 @@ node_modules
 .next
 dist
 build
+# Note: node_modules is created during build, so we don't exclude it
 

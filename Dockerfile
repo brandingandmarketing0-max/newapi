@@ -39,21 +39,21 @@ WORKDIR /app
 # Enable Corepack to use the correct Yarn version from package.json
 RUN corepack enable && corepack prepare yarn@4.9.4 --activate
 
-# Copy package files
-COPY package.json yarn.lock* ./
+# Copy package files first
+COPY package.json yarn.lock* .yarnrc.yml ./
 
-# Install dependencies
+# Install dependencies (creates node_modules since nodeLinker is set to node-modules in .yarnrc.yml)
 RUN yarn install --frozen-lockfile
 
 # Install Playwright Chromium (without system deps since we installed them above)
 RUN yarn playwright install chromium
 
-# Copy application code
+# Copy the rest of the application code (including .yarn and .pnp.cjs if they exist)
 COPY . .
 
 # Expose port
 EXPOSE 3001
 
-# Start the application
-CMD ["yarn", "start"]
+# Start the application using node directly (more reliable than yarn start)
+CMD ["node", "index.js", "serve"]
 
