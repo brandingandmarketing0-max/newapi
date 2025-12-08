@@ -1,11 +1,24 @@
 // Load .env file only if it exists (for local development)
 // On Railway, environment variables are set in the dashboard
 const fs = require("fs");
+
+// Force unbuffered output for Railway logs
+process.stdout.setEncoding('utf8');
+process.stderr.setEncoding('utf8');
+
+// Detect Railway environment (Railway sets PORT automatically)
+const isRailway = !!process.env.PORT || !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY;
+
 if (fs.existsSync(".env")) {
   require("dotenv").config();
   console.log("✅ Loaded .env file for local development");
-} else if (!process.env.RAILWAY_ENVIRONMENT) {
+  process.stdout.write(""); // Flush
+} else if (!isRailway) {
   console.log("ℹ️  No .env file found. Using environment variables from system.");
+  process.stdout.write(""); // Flush
+} else {
+  console.log("🚂 Railway environment detected - using Railway environment variables");
+  process.stdout.write(""); // Flush
 }
 
 const express = require("express");
@@ -155,8 +168,31 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
+// CORS configuration - allow Vercel frontend and localhost for development
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3000',
+      'https://fanslink-instagram-tracking.vercel.app'
+    ];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000'],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list or is a Vercel preview deployment
+    const isAllowed = allowedOrigins.includes(origin) || origin.endsWith('.vercel.app');
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.warn(`⚠️  [CORS] Blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 app.use(express.json());
@@ -466,54 +502,78 @@ if (command === "serve") {
   const port = args[1] ? parseInt(args[1], 10) : PORT;
   
   // Railway requires listening on 0.0.0.0, not localhost
-  const host = process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : 'localhost';
+  // Detect Railway: PORT is set automatically, or RAILWAY_ENVIRONMENT/RAILWAY vars exist
+  const isRailwayEnv = !!process.env.PORT || !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY;
+  const host = isRailwayEnv ? '0.0.0.0' : 'localhost';
+  
+  // Immediate startup logging
+  console.log("\n🚀 Starting Instagram Tracking API Server...");
+  console.log(`📍 Environment: ${isRailwayEnv ? 'Railway (Production)' : 'Local Development'}`);
+  console.log(`🌐 Host: ${host}`);
+  console.log(`🔌 Port: ${port}`);
+  console.log(`📦 Node.js: ${process.version}`);
+  process.stdout.write(""); // Force flush
   
   app.listen(port, host, () => {
-    console.log(`\n🚀 Server running on http://${host}:${port}`);
-    console.log(`📡 Health check: http://${host}:${port}/health`);
-    console.log(`📋 Queue status: http://${host}:${port}/queue/status`);
-    console.log(`📋 API docs: http://${host}:${port}/`);
-    console.log(`\n⏰ Cron jobs scheduled:`);
-    console.log(`   - Daily tracking: ${DAILY_CRON_SCHEDULE} (1:55 AM IST every night)`);
+    // Force immediate log output
+    const logs = [
+      `\n🚀 Server running on http://${host}:${port}`,
+      `📡 Health check: http://${host}:${port}/health`,
+      `📋 Queue status: http://${host}:${port}/queue/status`,
+      `📋 API docs: http://${host}:${port}/`,
+      `\n⏰ Cron jobs scheduled:`,
+      `   - Daily tracking: ${DAILY_CRON_SCHEDULE} (2:15 AM IST every night)`,
+    ];
+    
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
-      console.log(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
+      logs.push(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
     } else {
-      console.log(`   - Periodic refresh: DISABLED (only daily at 1:55 AM IST will run)`);
+      logs.push(`   - Periodic refresh: DISABLED (only daily at 2:15 AM IST will run)`);
     }
     
     // Show next execution times
-    console.log(`\n📅 Next execution times (${TIMEZONE} timezone - IST = UTC+5:30):`);
+    logs.push(`\n📅 Next execution times (${TIMEZONE} timezone - IST = UTC+5:30):`);
     const nextDaily = getNextCronExecution(DAILY_CRON_SCHEDULE);
     if (nextDaily) {
       const dailyTime = formatDateWithTimezone(nextDaily);
       const istTime = new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-      console.log(`   - Daily refresh: ${istTime} IST (${dailyTime.utc} UTC) - ${dailyTime.relative}`);
+      logs.push(`   - Daily refresh: ${istTime} IST (${dailyTime.utc} UTC) - ${dailyTime.relative}`);
     }
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       const nextRefresh = getNextCronExecution(REFRESH_CRON_SCHEDULE);
       if (nextRefresh) {
         const refreshTime = formatDateWithTimezone(nextRefresh);
         const istTime = new Date(nextRefresh).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-        console.log(`   - Periodic refresh: ${istTime} IST (${refreshTime.utc} UTC) - ${refreshTime.relative}`);
+        logs.push(`   - Periodic refresh: ${istTime} IST (${refreshTime.utc} UTC) - ${refreshTime.relative}`);
       }
     }
-    console.log(`\n💡 Check /cron/schedule endpoint for detailed schedule info`);
-    console.log(`\n🔄 Queue system: Active with ${MIN_TIME_BETWEEN_JOBS / 1000 / 60} minute rate limiting`);
-    console.log(`   - Rate limit configurable via MIN_TIME_BETWEEN_JOBS_MS env var (default: 300000ms = 5 minutes)`);
-    console.log(`   - Exponential backoff enabled for rate limit errors`);
-    console.log(`   - Jobs run immediately when created (respects rate limits)`);
-    console.log(`   - Queue processes automatically in background`);
-    console.log(`\n✅ Server ready!`);
-    if (process.env.RAILWAY_ENVIRONMENT) {
-      console.log(`🌐 Railway deployment detected - listening on 0.0.0.0:${port}\n`);
+    
+    logs.push(
+      `\n💡 Check /cron/schedule endpoint for detailed schedule info`,
+      `\n🔄 Queue system: Active with ${MIN_TIME_BETWEEN_JOBS / 1000 / 60} minute rate limiting`,
+      `   - Rate limit configurable via MIN_TIME_BETWEEN_JOBS_MS env var (default: 300000ms = 5 minutes)`,
+      `   - Exponential backoff enabled for rate limit errors`,
+      `   - Jobs run immediately when created (respects rate limits)`,
+      `   - Queue processes automatically in background`,
+      `\n✅ Server ready and listening!`
+    );
+    
+    if (isRailwayEnv) {
+      logs.push(`🌐 Railway deployment - listening on 0.0.0.0:${port}\n`);
     } else {
-      console.log(`💻 Local development - listening on localhost:${port}\n`);
+      logs.push(`💻 Local development - listening on localhost:${port}\n`);
     }
+    
+    // Output all logs at once and force flush
+    console.log(logs.join('\n'));
+    process.stdout.write(''); // Force flush stdout
+    process.stderr.write(''); // Force flush stderr
     
     // Start processing queue on server start (in case there are pending jobs)
     // Use setTimeout to ensure server is fully started before processing
     setTimeout(() => {
       console.log(`🔄 [QUEUE] Starting queue processor on server startup...`);
+      process.stdout.write(''); // Flush
       processQueue();
     }, 1000);
   });

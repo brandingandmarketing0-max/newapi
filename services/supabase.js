@@ -25,6 +25,7 @@ if (!SUPABASE_KEY) {
 
 console.log(`🔗 Connecting to Supabase: ${SUPABASE_URL}`);
 console.log(`🔑 Using key: ${SUPABASE_KEY.substring(0, 20)}...`);
+process.stdout.write(''); // Force flush logs immediately
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
@@ -50,6 +51,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       console.error('⚠️  Supabase connection test error:', error.message);
     } else {
       console.log('✅ Supabase connected successfully! Table ig_profiles exists.');
+      process.stdout.write(''); // Force flush
     }
   } catch (err) {
     console.error('⚠️  Failed to test Supabase connection:', err.message);
