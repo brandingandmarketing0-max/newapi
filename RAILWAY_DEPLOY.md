@@ -103,7 +103,11 @@ curl https://your-app.up.railway.app/
 
 ### Playwright Issues
 - **Browser not found**: The `postinstall` script should install Chromium automatically. If it fails, check build logs.
-- **System dependencies**: The `--with-deps` flag installs required system libraries automatically.
+- **System dependencies missing (libglib-2.0.so.0 error)**: 
+  - ✅ **FIXED**: A `Dockerfile` is included that installs all required system dependencies
+  - Railway will automatically use the Dockerfile if present
+  - The Dockerfile installs: libglib2.0-0, libnss3, libnspr4, and all other Chromium dependencies
+  - If Railway is using nixpacks instead, you can force Docker by adding a `railway.json` or setting the buildpack in Railway settings
 - **Build time**: Playwright installation adds ~1-2 minutes to build time (this is normal).
 - **Memory**: Playwright headless browser runs fine on Railway's default memory limits.
 

@@ -1,0 +1,21 @@
+[phases.setup]
+nixPkgs = [
+  "nodejs-20_x",
+  "yarn"
+]
+
+[phases.install]
+cmds = [
+  "yarn install --frozen-lockfile",
+  "yarn playwright install chromium"
+]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "yarn start"
+
+[providers.railway]
+buildCommand = "yarn install --frozen-lockfile && yarn playwright install chromium"
+
