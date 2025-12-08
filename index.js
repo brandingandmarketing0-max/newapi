@@ -28,7 +28,7 @@ const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *
 
 // Timezone: Set to IST (Indian Standard Time) by default
 // IST = UTC+5:30 (Asia/Kolkata)
-const TIMEZONE = process.env.TZ || "Asia/Kolkata";
+const TIMEZONE = process.env.TZ || "Asia/Kolkat";
 
 /**
  * Calculate next execution time for a cron schedule
