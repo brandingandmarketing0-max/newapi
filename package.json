@@ -5,7 +5,9 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node index.js serve"
+    "start": "node index.js serve",
+    "dev": "node index.js serve",
+    "postinstall": "playwright install chromium --with-deps || playwright install chromium"
   },
   "engines": {
     "node": ">=20.12.0"
@@ -17,6 +19,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "node-cron": "^4.2.1"
-  }
+    "node-cron": "^4.2.1",
+    "playwright": "^1.57.0"
+  },
+  "packageManager": "yarn@4.9.4+sha512.7b1cb0b62abba6a537b3a2ce00811a843bea02bcf53138581a6ae5b1bf563f734872bd47de49ce32a9ca9dcaff995aa789577ffb16811da7c603dcf69e73750b"
 }

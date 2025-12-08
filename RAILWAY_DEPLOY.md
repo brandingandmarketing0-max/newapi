@@ -52,7 +52,8 @@ NODE_ENV=production
 
 - Railway will auto-deploy when you push to GitHub
 - Or click **"Deploy"** button manually
-- Wait 1-2 minutes for build to complete
+- **Wait 2-3 minutes for build to complete** (Playwright browser installation takes extra time)
+- The build will automatically install Playwright Chromium browser and system dependencies
 
 ### 7. Get Your URL
 
@@ -88,6 +89,7 @@ curl https://your-app.up.railway.app/
 - Check **Root Directory** is `src-backup-railway`
 - Verify `package.json` has `"start": "node index.js serve"`
 - Check build logs in Railway dashboard
+- **Playwright Installation**: If Playwright browser installation fails, check build logs for errors. The `postinstall` script should automatically install Chromium with system dependencies.
 
 ### Service Not Responding
 - Check environment variables are set
@@ -98,6 +100,12 @@ curl https://your-app.up.railway.app/
 - Railway sets PORT automatically
 - Don't hardcode port in code
 - Use `process.env.PORT || 3001`
+
+### Playwright Issues
+- **Browser not found**: The `postinstall` script should install Chromium automatically. If it fails, check build logs.
+- **System dependencies**: The `--with-deps` flag installs required system libraries automatically.
+- **Build time**: Playwright installation adds ~1-2 minutes to build time (this is normal).
+- **Memory**: Playwright headless browser runs fine on Railway's default memory limits.
 
 ## 💰 Cost
 
@@ -112,5 +120,7 @@ Your API is now:
 - ✅ HTTPS enabled automatically
 - ✅ Auto-deploys on git push
 - ✅ No timeout issues (unlike Cloudflare Workers)
+- ✅ Playwright Chromium browser installed and ready for Instagram scraping
+
 
 

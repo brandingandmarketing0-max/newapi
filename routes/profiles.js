@@ -1492,11 +1492,22 @@ router.delete("/tracking/:tracking_id", async (req, res) => {
     }
     
     // Delete the profile (CASCADE will delete related snapshots, deltas, etc.)
-    const { data: deletedData, error: deleteError } = await supabase
+    // If profile has user_id, require it to match. If profile.user_id is null, delete by tracking_id only.
+    let deleteQuery = supabase
       .from("ig_profiles")
       .delete()
-      .eq("tracking_id", tracking_id)
-      .eq("user_id", final_user_id) // Double-check user_id matches
+      .eq("tracking_id", tracking_id);
+    
+    // Only add user_id filter if the profile has a user_id set
+    // If profile.user_id is null, we don't add the filter (allows deletion of profiles without user_id)
+    if (profile.user_id) {
+      deleteQuery = deleteQuery.eq("user_id", final_user_id);
+      console.log(`   [DELETE] Filtering by user_id: ${final_user_id}`);
+    } else {
+      console.log(`   [DELETE] Profile has no user_id, deleting by tracking_id only`);
+    }
+    
+    const { data: deletedData, error: deleteError } = await deleteQuery
       .select(); // Return deleted rows to verify deletion
     
     if (deleteError) {

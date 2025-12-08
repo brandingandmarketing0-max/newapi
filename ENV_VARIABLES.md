@@ -58,7 +58,39 @@ RAILWAY_API_URL=https://newapi-production-a8b3.up.railway.app
 | `NODE_ENV` | Environment | `production` for Railway, `development` for local |
 | `RAILWAY_API_URL` | Your Railway API URL | Railway Dashboard → Settings → Domains (default: `https://newapi-production-a8b3.up.railway.app`) |
 
-## 🔐 Optional Variables (for R2 storage)
+## 🔐 Optional Variables
+
+### Instagram Cookies (for Playwright scraping)
+
+**⚠️ REQUIRED for scraping reels pages.** Get cookies from Chrome DevTools:
+
+```
+INSTAGRAM_COOKIES="mid=xxx; sessionid=xxx; ig_did=xxx; csrftoken=xxx; datr=xxx; ig_nrcb=xxx"
+```
+
+**⚠️ IMPORTANT: You MUST include the `sessionid` cookie for authentication!** Without it, Instagram will redirect to the login page.
+
+**How to get cookies:**
+1. Open Chrome and **log into Instagram** (instagram.com)
+2. Press **F12** to open DevTools
+3. Go to **Application** tab → **Storage** → **Cookies** → `https://www.instagram.com`
+4. Copy the values for (right-click → Copy):
+   - **`sessionid`** (REQUIRED - most important!)
+   - `mid`
+   - `csrftoken`
+   - `datr`
+   - `ig_did`
+   - `ig_nrcb`
+5. Format: `name1=value1; name2=value2; name3=value3`
+
+**Example:**
+```
+INSTAGRAM_COOKIES="mid=aTWpkwALAAGNrS5VWDp3XLkvTyKs; sessionid=78008627449:qvWgKbVeJDfB30:26:AYjz9UKXsrWakkpQ2xkBjlX9fmtL6y9PIKl8rFphxW8; ig_did=2612B2C8-FA74-4AE2-BB32-88737E2AEC82; csrftoken=a80jwHWaDK-5n8J9RACM9L; datr=kqk1adXxib2X2pEdhCDk3muw; ig_nrcb=1"
+```
+
+**Note:** Cookies expire after some time. If you get redirected to login, get fresh cookies and update `INSTAGRAM_COOKIES`.
+
+### R2 Storage (for reel downloads)
 
 If you're using Cloudflare R2 for reel storage:
 
@@ -68,6 +100,7 @@ CLOUDFLARE_R2_ACCESS_KEY_ID=your_access_key
 CLOUDFLARE_R2_SECRET_ACCESS_KEY=your_secret_key
 CLOUDFLARE_R2_BUCKET_NAME=your_bucket_name
 CLOUDFLARE_R2_PUBLIC_URL=https://your-bucket.r2.dev
+DOWNLOAD_REELS_TO_R2=true
 ```
 
 ## ⏱️ Rate Limiting Configuration (Recommended)

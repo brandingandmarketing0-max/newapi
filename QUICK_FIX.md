@@ -60,3 +60,4 @@ After adding variables, check Railway logs:
 - **Use Railway Variables tab** - That's the correct way
 - **Variables are encrypted** - Safe to store secrets there
 
+

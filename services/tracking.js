@@ -1,6 +1,6 @@
 
 const supabase = require("./supabase");
-const { fetchInstagramProfileData, fetchReelData } = require("./instagram");
+const { fetchInstagramProfileData, fetchReelData, scrapeReelsPageWithPlaywright } = require("./instagram");
 const crypto = require("crypto");
 
 // Generate unique tracking ID
@@ -471,49 +471,221 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       }
     }
 
-    // 7. Process Reels (Keep only last 12 total)
-    // Combine clips and recent_media, deduplicate by shortcode
-    const allMedia = [...(igData.clips || []), ...(igData.recent_media || [])];
-    const uniqueMedia = Array.from(new Map(allMedia.map(m => [m.shortcode, m])).values());
+    // 7. Process Reels using Playwright scraping method
+    // STEP 1: Use Playwright to scrape reels page and get all current reel shortcodes
+    console.log(`\n🎬 [${username}] Step 1: Scraping reels page using Playwright to check for new reels...`);
+    let reelShortcodes = [];
     
-    // Sort by taken_at (newest first) and take only last 12
-    uniqueMedia.sort((a, b) => {
-      const timeA = a.taken_at_timestamp || 0;
-      const timeB = b.taken_at_timestamp || 0;
-      return timeB - timeA;
-    });
-    const last12 = uniqueMedia.slice(0, 12);
+    try {
+      const scrapeResult = await scrapeReelsPageWithPlaywright(username);
+      if (scrapeResult.error) {
+        console.warn(`⚠️  [${username}] Playwright scraping failed: ${scrapeResult.error}`);
+        console.log(`   Falling back to web profile API for reels...`);
+        // Fallback to web profile API if Playwright fails
+        const allMedia = [...(igData.clips || []), ...(igData.recent_media || [])];
+        reelShortcodes = allMedia.map(m => m.shortcode).filter(Boolean);
+      } else {
+        reelShortcodes = scrapeResult.shortcodes || [];
+        console.log(`✅ [${username}] Found ${reelShortcodes.length} reel shortcodes via Playwright`);
+      }
+    } catch (err) {
+      console.warn(`⚠️  [${username}] Playwright scraping error: ${err.message}`);
+      console.log(`   Falling back to web profile API for reels...`);
+      // Fallback to web profile API if Playwright fails
+      const allMedia = [...(igData.clips || []), ...(igData.recent_media || [])];
+      reelShortcodes = allMedia.map(m => m.shortcode).filter(Boolean);
+    }
 
-    // Upsert reels and track metrics (only last 12)
-    for (let i = 0; i < last12.length; i++) {
-      const reel = last12[i];
-      
-      // Fetch individual reel data if we're missing video_url or duration (for videos)
-      let videoUrl = reel.video_url || null;
-      let videoDuration = reel.video_duration || null;
-      let averageWatchTime = reel.average_watch_time || null; // Not available in public API, but store if we ever get it
-      
-      // If it's a video and we're missing video_url or duration, fetch individual reel data
-      if (reel.is_video && (!videoUrl || !videoDuration)) {
+    // Get unique shortcodes from scraped results
+    const uniqueShortcodes = Array.from(new Set(reelShortcodes));
+    console.log(`📊 [${username}] Found ${uniqueShortcodes.length} unique reel shortcodes from scraping`);
+
+    // STEP 2: Get the latest reel from database to compare with
+    console.log(`\n🔍 [${username}] Step 2: Checking database for latest reel...`);
+    const { data: latestReelInDb } = await supabase
+      .from("ig_profile_reels")
+      .select("shortcode, taken_at")
+      .eq("profile_id", profile.id)
+      .order("taken_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const latestShortcodeInDb = latestReelInDb?.shortcode || null;
+    const latestTimestampInDb = latestReelInDb?.taken_at ? new Date(latestReelInDb.taken_at).getTime() / 1000 : 0;
+    
+    if (latestShortcodeInDb) {
+      console.log(`📌 [${username}] Latest reel in database: ${latestShortcodeInDb} (timestamp: ${latestTimestampInDb})`);
+    } else {
+      console.log(`📌 [${username}] No reels found in database - all scraped reels are new`);
+    }
+
+    // STEP 3: Identify new reels (shortcodes not in database or newer than latest)
+    console.log(`\n🆕 [${username}] Step 3: Identifying new reels...`);
+    
+    // Get all existing shortcodes from database for this profile
+    const { data: existingReels } = await supabase
+      .from("ig_profile_reels")
+      .select("shortcode, taken_at")
+      .eq("profile_id", profile.id);
+    
+    const existingShortcodes = new Set((existingReels || []).map(r => r.shortcode));
+    const existingShortcodesMap = new Map((existingReels || []).map(r => [r.shortcode, r.taken_at ? new Date(r.taken_at).getTime() / 1000 : 0]));
+    
+    // Find new shortcodes (not in database)
+    const newShortcodes = uniqueShortcodes.filter(sc => !existingShortcodes.has(sc));
+    
+    console.log(`📊 [${username}] New reels found: ${newShortcodes.length}`);
+    if (newShortcodes.length > 0) {
+      console.log(`   🆕 New shortcodes: ${newShortcodes.join(', ')}`);
+    }
+
+    // Rate limiting delay between GraphQL requests
+    const RATE_LIMIT_DELAY = 2000; // 2 seconds
+
+    // STEP 4: Fetch data for new reels first
+    const newReelsWithData = [];
+    if (newShortcodes.length > 0) {
+      console.log(`\n📥 [${username}] Step 4: Fetching data for ${newShortcodes.length} new reel(s)...`);
+      for (let i = 0; i < newShortcodes.length; i++) {
+        const shortcode = newShortcodes[i];
+        
         try {
-          console.log(`\n🔍 [${username}] Fetching individual reel data for ${reel.shortcode} (missing ${!videoUrl ? 'video_url' : ''} ${!videoDuration ? 'duration' : ''})...`);
-          const reelData = await fetchReelData(reel.shortcode);
-          if (reelData.video_url) videoUrl = reelData.video_url;
-          if (reelData.video_duration) videoDuration = reelData.video_duration;
-          // Note: average_watch_time is not available in public API, only in Instagram Insights
-          if (reelData.average_watch_time) averageWatchTime = reelData.average_watch_time;
-          console.log(`✅ [${username}] Fetched reel data: duration=${videoDuration}s, has_video_url=${!!videoUrl}, avg_watch_time=${averageWatchTime || 'N/A (not available in public API)'}`);
+          const reelData = await fetchReelData(shortcode);
+          
+          if (!reelData || reelData.error) {
+            console.warn(`⚠️  [${username}] Failed to fetch new reel data for ${shortcode}: ${reelData?.error || 'Unknown error'}`);
+            continue;
+          }
+          
+          newReelsWithData.push({
+            shortcode,
+            ...reelData
+          });
+          
+          console.log(`✅ [${username}] Fetched data for new reel: ${shortcode}`);
+          
+          // Rate limiting
+          if (i < newShortcodes.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
+          }
         } catch (err) {
-          console.warn(`⚠️ [${username}] Failed to fetch individual reel data for ${reel.shortcode}:`, err.message);
+          console.warn(`⚠️  [${username}] Failed to fetch new reel data for ${shortcode}:`, err.message);
+          continue;
         }
       }
+    }
+
+    // STEP 5: Fetch data for existing reels (latest 12) to refresh metrics
+    console.log(`\n🔄 [${username}] Step 5: Refreshing data for existing reels (latest 12)...`);
+    
+    // Get the latest 12 shortcodes from database (by timestamp)
+    const { data: latest12ReelsInDb } = await supabase
+      .from("ig_profile_reels")
+      .select("shortcode")
+      .eq("profile_id", profile.id)
+      .order("taken_at", { ascending: false })
+      .limit(12);
+    
+    const existingShortcodesToRefresh = (latest12ReelsInDb || []).map(r => r.shortcode);
+    console.log(`📋 [${username}] Refreshing ${existingShortcodesToRefresh.length} existing reel(s)...`);
+    
+    const refreshedReelsWithData = [];
+    for (let i = 0; i < existingShortcodesToRefresh.length; i++) {
+      const shortcode = existingShortcodesToRefresh[i];
+      
+      try {
+        const reelData = await fetchReelData(shortcode);
+        
+        if (!reelData || reelData.error) {
+          console.warn(`⚠️  [${username}] Failed to refresh reel data for ${shortcode}: ${reelData?.error || 'Unknown error'}`);
+          continue;
+        }
+        
+        refreshedReelsWithData.push({
+          shortcode,
+          ...reelData
+        });
+        
+        // Rate limiting
+        if (i < existingShortcodesToRefresh.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
+        }
+      } catch (err) {
+        console.warn(`⚠️  [${username}] Failed to refresh reel data for ${shortcode}:`, err.message);
+        continue;
+      }
+    }
+
+    // Combine new and refreshed reels, sort by date (newest first)
+    const allReelsWithData = [...newReelsWithData, ...refreshedReelsWithData];
+    allReelsWithData.sort((a, b) => {
+      const dateA = a.taken_at_timestamp || 0;
+      const dateB = b.taken_at_timestamp || 0;
+      return dateB - dateA; // Newest first
+    });
+    
+    // Take ONLY the latest 12 reels total (new + refreshed)
+    const latest12Reels = allReelsWithData.slice(0, 12);
+    const shortcodesToProcess = latest12Reels.map(r => r.shortcode);
+    const reelsDataMap = new Map(latest12Reels.map(r => [r.shortcode, r]));
+    
+    // Get today's date for comparison
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    console.log(`\n✅ [${username}] Step 6: Processing latest 12 reels (${newShortcodes.length} new + ${refreshedReelsWithData.length} refreshed):`);
+    let todayReelsCount = 0;
+    latest12Reels.forEach((reel, idx) => {
+      const reelDate = reel.taken_at_timestamp ? new Date(reel.taken_at_timestamp * 1000) : null;
+      const isToday = reelDate ? (reelDate.setHours(0, 0, 0, 0) === today.getTime()) : false;
+      if (isToday) todayReelsCount++;
+      
+      const dateStr = reel.posted_date_readable || 'N/A';
+      const isNew = newShortcodes.includes(reel.shortcode);
+      const todayMarker = isToday ? ' 📅 TODAY' : '';
+      const newMarker = isNew ? ' 🆕 NEW' : '';
+      console.log(`   ${idx + 1}. ${reel.shortcode} - Posted: ${dateStr}${todayMarker}${newMarker}`);
+    });
+    
+    console.log(`\n📊 [${username}] Summary:`);
+    console.log(`   🆕 New reels found: ${newShortcodes.length}`);
+    console.log(`   🔄 Existing reels refreshed: ${refreshedReelsWithData.length}`);
+    console.log(`   📅 Total latest 12 reels: ${latest12Reels.length}`);
+    console.log(`   📅 Reels from today: ${todayReelsCount}`);
+    console.log(`   📅 Reels from previous days: ${latest12Reels.length - todayReelsCount}`);
+    console.log(`\n📊 [${username}] Processing and calculating deltas for these 12 reels...`);
+
+    // Upsert reels and track metrics (ONLY the latest 12 reels)
+    for (let i = 0; i < shortcodesToProcess.length; i++) {
+      const shortcode = shortcodesToProcess[i];
+      const reelData = reelsDataMap.get(shortcode);
+      
+      if (!reelData) {
+        console.warn(`⚠️  [${username}] No data found for ${shortcode}, skipping...`);
+        continue; // Skip if no data
+      }
+      
+      // Extract the three metrics we need: view_count, like_count, comment_count
+      const viewCount = reelData.video_play_count ?? reelData.video_view_count ?? reelData.view_count ?? null;
+      const likeCount = (reelData.like_count !== null && reelData.like_count !== undefined) ? reelData.like_count : null;
+      const commentCount = (reelData.comment_count !== null && reelData.comment_count !== undefined) ? reelData.comment_count : null;
+      
+      console.log(`\n🔍 [${username}] [${i + 1}/12] Processing reel: ${shortcode}`);
+      console.log(`   📅 Posted: ${reelData.posted_date_readable || 'N/A'}`);
+      console.log(`   👁️  Views: ${viewCount !== null ? viewCount.toLocaleString() : 'N/A'}`);
+      console.log(`   ❤️  Likes: ${likeCount !== null ? likeCount.toLocaleString() : 'N/A'}`);
+      console.log(`   💬 Comments: ${commentCount !== null ? commentCount.toLocaleString() : 'N/A'}`);
+      
+      const videoUrl = reelData.video_url || null;
+      const videoDuration = reelData.video_duration || null;
+      const averageWatchTime = reelData.average_watch_time || null;
 
       // Get existing reel from DATABASE to compare metrics
       const { data: existingReel } = await supabase
         .from("ig_profile_reels")
         .select("*")
         .eq("profile_id", profile.id)
-        .eq("shortcode", reel.shortcode)
+        .eq("shortcode", shortcode)
         .maybeSingle();
 
       // Calculate growth from previous DATABASE values
@@ -527,16 +699,16 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         const prevLikes = existingReel.like_count || 0;
         const prevComments = existingReel.comment_count || 0;
         
-        const currViews = reel.video_view_count || 0;
-        const currLikes = reel.like_count || 0;
-        const currComments = reel.comment_count || 0;
+        const currViews = viewCount ?? 0;
+        const currLikes = likeCount ?? 0;
+        const currComments = commentCount ?? 0;
         
         viewGrowth = currViews - prevViews;
         likeGrowth = currLikes - prevLikes;
         commentGrowth = currComments - prevComments;
         
         // Log growth calculation from DATABASE - ALWAYS show view count tracking
-        console.log(`\n🎬 [${username}] Reel Growth Calculation (${reel.shortcode}):`);
+        console.log(`\n🎬 [${username}] Reel Growth Calculation (${shortcode}):`);
         console.log(`   Previous (from DB): Views=${prevViews.toLocaleString()}, Likes=${prevLikes.toLocaleString()}, Comments=${prevComments.toLocaleString()}`);
         console.log(`   Current (from Instagram): Views=${currViews.toLocaleString()}, Likes=${currLikes.toLocaleString()}, Comments=${currComments.toLocaleString()}`);
         console.log(`   Growth Calculated: Views=${viewGrowth > 0 ? '+' : ''}${viewGrowth.toLocaleString()}, Likes=${likeGrowth > 0 ? '+' : ''}${likeGrowth.toLocaleString()}, Comments=${commentGrowth > 0 ? '+' : ''}${commentGrowth.toLocaleString()}`);
@@ -564,30 +736,31 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         // Always log view count specifically for tracking
         console.log(`   📊 View Count Tracking: ${prevViews.toLocaleString()} → ${currViews.toLocaleString()} (Change: ${viewGrowth > 0 ? '+' : ''}${viewGrowth.toLocaleString()})`);
       } else {
-        console.log(`\n🎬 [${username}] New reel detected: ${reel.shortcode} (not in database yet - no previous data for comparison)`);
+        console.log(`\n🎬 [${username}] New reel detected: ${shortcode} (not in database yet - no previous data for comparison)`);
       }
 
       // Upsert reel with current metrics and growth deltas to DATABASE
+      // Map all fields from GraphQL response to database schema
       const { data: savedReel, error: reelError } = await supabase
         .from("ig_profile_reels")
         .upsert(
           {
             profile_id: profile.id,
-            shortcode: reel.shortcode,
-            caption: reel.caption,
-            taken_at: reel.taken_at_timestamp ? new Date(reel.taken_at_timestamp * 1000).toISOString() : null,
-            is_video: reel.is_video,
-            video_url: videoUrl,
-            duration: videoDuration,
-            average_watch_time: averageWatchTime, // Store if available (currently not available in public API)
-            view_count: reel.video_view_count,
-            like_count: reel.like_count,
-            comment_count: reel.comment_count,
-            display_url: reel.display_url,
+            shortcode: shortcode,
+            caption: reelData.caption || null,
+            taken_at: reelData.taken_at_timestamp ? new Date(reelData.taken_at_timestamp * 1000).toISOString() : null,
+            is_video: reelData.is_video || false,
+            video_url: videoUrl || null,
+            duration: videoDuration || null,
+            average_watch_time: averageWatchTime || null,
+            view_count: viewCount,
+            like_count: likeCount,
+            comment_count: commentCount,
+            display_url: reelData.display_url || reelData.thumbnail_src || null,
             // Store growth deltas in the table
-            view_delta: viewGrowth,
-            like_delta: likeGrowth,
-            comment_delta: commentGrowth
+            view_delta: viewGrowth || 0,
+            like_delta: likeGrowth || 0,
+            comment_delta: commentGrowth || 0
           },
           { onConflict: "profile_id,shortcode" }
         )
@@ -595,23 +768,27 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         .single();
 
       if (reelError) {
-        console.error(`❌ Reel upsert error for ${reel.shortcode}:`, reelError.message);
+        console.error(`❌ Reel upsert error for ${shortcode}:`, reelError.message);
         continue;
       }
       
-      console.log(`✅ [${username}] Reel saved/updated in database: ${reel.shortcode} (ID: ${savedReel.id})`);
+      console.log(`✅ [${username}] Reel saved/updated in database: ${shortcode} (ID: ${savedReel.id})`);
+      console.log(`   📊 Saved Metrics:`);
+      console.log(`      👁️  Views: ${viewCount !== null ? viewCount.toLocaleString() : 'N/A'}`);
+      console.log(`      ❤️  Likes: ${likeCount !== null ? likeCount.toLocaleString() : 'N/A'}`);
+      console.log(`      💬 Comments: ${commentCount !== null ? commentCount.toLocaleString() : 'N/A'}`);
       if (videoDuration) {
         console.log(`   📹 Duration saved: ${videoDuration}s`);
       } else {
-        console.warn(`   ⚠️  Duration is missing for ${reel.shortcode}`);
+        console.warn(`   ⚠️  Duration is missing for ${shortcode}`);
       }
 
       // Optionally download reel to R2 if enabled
       if (process.env.DOWNLOAD_REELS_TO_R2 === 'true' && savedReel.is_video && videoUrl && !savedReel.r2_video_url) {
         try {
-          console.log(`📥 [${username}] Downloading reel ${reel.shortcode} to R2...`);
+          console.log(`📥 [${username}] Downloading reel ${shortcode} to R2...`);
           const { downloadAndUploadReel } = require('./reel-downloader');
-          const r2Result = await downloadAndUploadReel(reel.shortcode, username, trackingId);
+          const r2Result = await downloadAndUploadReel(shortcode, username, trackingId);
           
           // Update reel with R2 URL
           const { error: updateError } = await supabase
@@ -620,12 +797,12 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
             .eq("id", savedReel.id);
           
           if (updateError) {
-            console.error(`❌ [${username}] Failed to update R2 URL for ${reel.shortcode}:`, updateError.message);
+            console.error(`❌ [${username}] Failed to update R2 URL for ${shortcode}:`, updateError.message);
           } else {
-            console.log(`✅ [${username}] Reel ${reel.shortcode} saved to R2: ${r2Result.url}`);
+            console.log(`✅ [${username}] Reel ${shortcode} saved to R2: ${r2Result.url}`);
           }
         } catch (r2Error) {
-          console.warn(`⚠️  [${username}] Failed to download reel ${reel.shortcode} to R2:`, r2Error.message);
+          console.warn(`⚠️  [${username}] Failed to download reel ${shortcode} to R2:`, r2Error.message);
           // Don't fail the whole tracking if R2 download fails
         }
       }
@@ -645,15 +822,24 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
             console.error(`   Please run CREATE_IG_REEL_METRICS.sql in Supabase SQL Editor to create the table.`);
             console.error(`   Without this table, reel growth tracking will not work.`);
             console.error(`   Error: ${metricsError.message}`);
-          } else {
-            console.error(`❌ [${username}] Failed to save metrics to database for ${reel.shortcode}:`, metricsError.message);
+        } else {
+          console.error(`❌ [${username}] Failed to save metrics to database for ${shortcode}:`, metricsError.message);
           }
         } else {
-          console.log(`✅ [${username}] Metrics snapshot saved to database for ${reel.shortcode} (ID: ${metricsData.id})`);
-          console.log(`   📊 Saved metrics: Views=${savedReel.view_count?.toLocaleString() || 0}, Likes=${savedReel.like_count?.toLocaleString() || 0}, Comments=${savedReel.comment_count?.toLocaleString() || 0}`);
+          console.log(`✅ [${username}] Metrics snapshot saved to database for ${shortcode} (ID: ${metricsData.id})`);
+          console.log(`   📊 Metrics Snapshot:`);
+          console.log(`      👁️  Views: ${savedReel.view_count !== null && savedReel.view_count !== undefined ? savedReel.view_count.toLocaleString() : 'N/A'}`);
+          console.log(`      ❤️  Likes: ${savedReel.like_count !== null && savedReel.like_count !== undefined ? savedReel.like_count.toLocaleString() : 'N/A'}`);
+          console.log(`      💬 Comments: ${savedReel.comment_count !== null && savedReel.comment_count !== undefined ? savedReel.comment_count.toLocaleString() : 'N/A'}`);
         }
       }
     }
+
+    // Summary: Only processed latest 12 reels
+    console.log(`\n✅ [${username}] Completed processing latest 12 reels (sorted by date, newest first)`);
+    console.log(`   📊 Total reels found: ${uniqueShortcodes.length}`);
+    console.log(`   📊 Processed: ${shortcodesToProcess.length} (latest 12 only)`);
+    console.log(`   📊 Skipped: ${uniqueShortcodes.length - shortcodesToProcess.length} older reels`);
 
     // Prune old reels > 12 (keep only last 12)
     // NOTE: We no longer delete older reels from the database.
@@ -662,22 +848,22 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
 
     // 8. Update Daily Metrics in DATABASE (Upsert for today)
     // IMPORTANT: Each day gets its own separate row - delta is calculated per day independently
-    const today = new Date().toISOString().split("T")[0];
-    console.log(`\n💾 [${username}] Updating daily metrics in database for ${today}...`);
+    const todayDateString = new Date().toISOString().split("T")[0];
+    console.log(`\n💾 [${username}] Updating daily metrics in database for ${todayDateString}...`);
     
     // Check if row exists for TODAY in DATABASE (each day is separate)
     const { data: dailyRow } = await supabase
       .from("ig_profile_daily_metrics")
       .select("*")
       .eq("profile_id", profile.id)
-      .eq("date", today)
+      .eq("date", todayDateString)
       .maybeSingle();
 
     if (dailyRow) {
       // Row exists for today - UPDATE it (keep today's open value, update close and delta)
       // Calculate delta from today's open value (set on first refresh of the day)
       const dailyDelta = newSnapshot.followers - dailyRow.followers_open;
-      console.log(`\n📊 [${username}] Updating existing daily row for ${today}:`);
+      console.log(`\n📊 [${username}] Updating existing daily row for ${todayDateString}:`);
       console.log(`   Date: ${dailyRow.date}`);
       console.log(`   Followers Open (start of day): ${dailyRow.followers_open?.toLocaleString() || 0}`);
       console.log(`   Followers Close (current): ${newSnapshot.followers?.toLocaleString() || 0}`);
@@ -691,12 +877,12 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
           followers_delta: dailyDelta
         })
         .eq("profile_id", profile.id)
-        .eq("date", today);
+        .eq("date", todayDateString);
       
       if (updateError) {
         console.error(`❌ Failed to update daily metrics: ${updateError.message}`);
       } else {
-        console.log(`✅ Daily metrics updated in database for ${today}`);
+        console.log(`✅ Daily metrics updated in database for ${todayDateString}`);
       }
     } else {
       // No row exists for today - CREATE a new one (first refresh of the day)
@@ -705,7 +891,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       
       // Check if this is the first tracking session (no previous daily metrics from this session)
       const trackingStartDate = new Date(profile.updated_at || profile.created_at).toISOString().split("T")[0];
-      const isFirstTracking = today === trackingStartDate || !lastSnapshot;
+      const isFirstTracking = todayDateString === trackingStartDate || !lastSnapshot;
       
       let todayOpen = newSnapshot.followers; // Default: use current as baseline for first tracking
       let todayDelta = 0; // First tracking: delta is 0 (baseline)
@@ -731,14 +917,14 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         }
       }
       
-      console.log(`\n📊 [${username}] Creating new daily row for ${today}:`);
+      console.log(`\n📊 [${username}] Creating new daily row for ${todayDateString}:`);
       if (isFirstTracking) {
         console.log(`   🆕 FIRST TIME TRACKING - Setting baseline values`);
         console.log(`   Followers Open (baseline): ${todayOpen?.toLocaleString() || 0}`);
         console.log(`   Followers Close (current): ${newSnapshot.followers?.toLocaleString() || 0}`);
         console.log(`   Daily Delta: 0 (baseline - growth will show on next refresh)`);
       } else {
-        console.log(`   Date: ${today}`);
+        console.log(`   Date: ${todayDateString}`);
       console.log(`   Followers Open (start of today): ${todayOpen?.toLocaleString() || 0}`);
       console.log(`   Followers Close (current): ${newSnapshot.followers?.toLocaleString() || 0}`);
       console.log(`   Daily Delta (for this day only): ${todayDelta > 0 ? '+' : ''}${todayDelta.toLocaleString()}`);
@@ -747,7 +933,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       
       const { data: newDailyRow, error: insertError } = await supabase.from("ig_profile_daily_metrics").insert({
         profile_id: profile.id,
-        date: today,
+        date: todayDateString,
         followers_open: todayOpen,
         followers_close: newSnapshot.followers,
         followers_delta: todayDelta
@@ -756,7 +942,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       if (insertError) {
         console.error(`❌ Failed to insert daily metrics: ${insertError.message}`);
       } else {
-        console.log(`✅ Daily metrics created in database for ${today} (ID: ${newDailyRow.id})`);
+        console.log(`✅ Daily metrics created in database for ${todayDateString} (ID: ${newDailyRow.id})`);
         console.log(`   ✅ Each day has its own row - no data mixing between days`);
       }
     }
@@ -771,9 +957,9 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     } else {
       console.log(`   ℹ️  Delta: Not calculated (first tracking, no previous snapshot)`);
     }
-    console.log(`   ✅ Reels: ${last12.length} items saved/updated in ig_profile_reels`);
-    console.log(`   ✅ Reel Metrics: ${last12.length} snapshots saved to ig_reel_metrics`);
-    console.log(`   ✅ Daily Metrics: Updated in ig_profile_daily_metrics for ${today}`);
+    console.log(`   ✅ Reels: ${shortcodesToProcess.length} items saved/updated in ig_profile_reels`);
+    console.log(`   ✅ Reel Metrics: ${shortcodesToProcess.length} snapshots saved to ig_reel_metrics`);
+    console.log(`   ✅ Daily Metrics: Updated in ig_profile_daily_metrics for ${todayDateString}`);
     console.log(`\n🎯 Next refresh will compare with snapshot ${newSnapshot.id} from the database!\n`);
     
     return { profile, snapshot: newSnapshot };

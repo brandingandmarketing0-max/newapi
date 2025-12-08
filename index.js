@@ -155,8 +155,21 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000'],
+  credentials: true
+}));
 app.use(express.json());
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`\n📥 [${req.method}] ${req.path}`);
+  console.log(`   Query:`, req.query);
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.log(`   Body:`, req.body);
+  }
+  next();
+});
 
 // Routes
 app.use("/profiles", profilesRouter);
