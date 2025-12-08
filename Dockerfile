@@ -36,6 +36,9 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
+# Enable Corepack to use the correct Yarn version from package.json
+RUN corepack enable && corepack prepare yarn@4.9.4 --activate
+
 # Copy package files
 COPY package.json yarn.lock* ./
 
