@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS ig_profiles (
   full_name TEXT,
   avatar_url TEXT,
   profile_picture TEXT,
+  biography TEXT,
+  external_url TEXT,
   user_id UUID,
   poll_interval_minutes INTEGER DEFAULT 60,
   last_snapshot_id UUID,
@@ -51,6 +53,7 @@ CREATE TABLE IF NOT EXISTS ig_profile_snapshots (
   media_count INTEGER,
   clips_count INTEGER,
   biography TEXT,
+  external_url TEXT,
   avatar_url TEXT,
   raw_json JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -89,9 +92,23 @@ CREATE INDEX IF NOT EXISTS idx_deltas_profile_id ON ig_profile_deltas(profile_id
 CREATE TABLE IF NOT EXISTS ig_profile_daily_metrics (
   profile_id UUID REFERENCES ig_profiles(id) ON DELETE CASCADE,
   date DATE NOT NULL,
+  -- Followers tracking
   followers_open INTEGER,
   followers_close INTEGER,
   followers_delta INTEGER,
+  -- Following tracking
+  following_open INTEGER,
+  following_close INTEGER,
+  following_delta INTEGER,
+  -- Media tracking
+  media_open INTEGER,
+  media_close INTEGER,
+  media_delta INTEGER,
+  posts_delta INTEGER, -- Alias for media_delta (for backwards compatibility)
+  -- Clips tracking
+  clips_open INTEGER,
+  clips_close INTEGER,
+  clips_delta INTEGER,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (profile_id, date)
 );

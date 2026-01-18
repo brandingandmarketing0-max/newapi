@@ -476,6 +476,210 @@ router.get("/", async (req, res) => {
   res.json({ data: profilesWithData });
 });
 
+// GET /profiles/graph-data - Get daily growth data for ALL profiles (optimized for dashboard graph)
+// Query params: ?days=14&metric=followers|views|likes|comments
+// IMPORTANT: This route MUST be before /:username to avoid route conflicts
+router.get("/graph-data", async (req, res) => {
+  const { days, metric } = req.query;
+  const daysNum = Number(days) || 14;
+  const metricType = metric || 'followers'; // followers, views, likes, comments
+  
+  console.log(`\n📊 [API] GET /profiles/graph-data (days: ${daysNum}, metric: ${metricType})`);
+
+  try {
+    // Get all profiles
+    const { data: profiles, error: profilesError } = await supabase
+      .from("ig_profiles")
+      .select("id, username, tracking_id, updated_at, created_at")
+      .order("created_at", { ascending: false });
+
+    if (profilesError) {
+      console.error(`❌ [API] Error fetching profiles:`, profilesError.message);
+      return res.status(500).json({ error: "Database error", details: profilesError.message });
+    }
+
+    if (!profiles || profiles.length === 0) {
+      console.log(`ℹ️  [API] No profiles found`);
+      return res.json({ data: [], profiles: [] });
+    }
+
+    console.log(`✅ [API] Found ${profiles.length} profile(s)`);
+
+    // Calculate date range
+    const since = new Date();
+    since.setDate(since.getDate() - daysNum);
+    const startDate = since.toISOString().split("T")[0];
+
+    // Fetch daily metrics for all profiles in parallel
+    const profilesData = await Promise.all(
+      profiles.map(async (profile) => {
+        const trackingStartTime = profile.updated_at || profile.created_at;
+        const trackingStartDate = new Date(trackingStartTime).toISOString().split("T")[0];
+        
+        // Use the requested days range (don't filter by tracking start date for graph - show all available data)
+        // This way the graph can show data even if profiles were tracked before the user started tracking
+        const queryStartDate = startDate;
+
+        // Get daily metrics for this profile
+        const { data: metrics, error: metricsError } = await supabase
+          .from("ig_profile_daily_metrics")
+          .select("*")
+          .eq("profile_id", profile.id)
+          .gte("date", queryStartDate)
+          .order("date", { ascending: true });
+
+        if (metricsError) {
+          console.error(`❌ [API] Error fetching metrics for @${profile.username}:`, metricsError.message);
+        } else {
+          console.log(`   @${profile.username}: Found ${metrics?.length || 0} daily metrics (queryStartDate: ${queryStartDate}, trackingStartDate: ${trackingStartDate})`);
+        }
+
+        // If metric is views/likes/comments, we also need reel metrics
+        const reelDeltasByDate = new Map();
+        
+        if (metricType === 'views' || metricType === 'likes' || metricType === 'comments') {
+          // Get all reels for this profile
+          const { data: reels } = await supabase
+            .from("ig_profile_reels")
+            .select("id")
+            .eq("profile_id", profile.id);
+
+          const reelIds = (reels || []).map(r => r.id);
+
+          if (reelIds.length > 0 && metrics && metrics.length > 0) {
+            // Fetch all reel metrics for the date range
+            const { data: allReelMetrics } = await supabase
+              .from("ig_reel_metrics")
+              .select("*")
+              .in("reel_id", reelIds)
+              .gte("captured_at", queryStartDate + 'T00:00:00.000Z')
+              .order("captured_at", { ascending: true });
+
+            // Group by reel_id
+            const reelMetricsMap = new Map();
+            allReelMetrics?.forEach(m => {
+              if (!reelMetricsMap.has(m.reel_id)) {
+                reelMetricsMap.set(m.reel_id, []);
+              }
+              reelMetricsMap.get(m.reel_id).push(m);
+            });
+
+            // For each daily metric date, calculate reel growth for that date
+            metrics.forEach((dailyMetric) => {
+              const metricDate = dailyMetric.date;
+              const nextDate = new Date(metricDate);
+              nextDate.setDate(nextDate.getDate() + 1);
+              const nextDateStr = nextDate.toISOString().split("T")[0];
+
+              let totalReelViews = 0;
+              let totalReelLikes = 0;
+              let totalReelComments = 0;
+
+              reelMetricsMap.forEach((reelMetrics) => {
+                reelMetrics.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime());
+                
+                // Find metrics for this specific date
+                const dateMetrics = reelMetrics.filter(m => {
+                  const capturedDate = new Date(m.captured_at).toISOString().split("T")[0];
+                  return capturedDate === metricDate || capturedDate === nextDateStr;
+                });
+                
+                if (dateMetrics.length > 0) {
+                  // Get the latest metric for this date
+                  const latest = dateMetrics[dateMetrics.length - 1];
+                  // Get the previous metric (before this date)
+                  const previousIndex = reelMetrics.indexOf(latest) - 1;
+                  
+                  if (previousIndex >= 0) {
+                    const previous = reelMetrics[previousIndex];
+                    totalReelViews += Math.max(0, (latest.view_count || 0) - (previous.view_count || 0));
+                    totalReelLikes += Math.max(0, (latest.like_count || 0) - (previous.like_count || 0));
+                    totalReelComments += Math.max(0, (latest.comment_count || 0) - (previous.comment_count || 0));
+                  }
+                }
+              });
+
+              reelDeltasByDate.set(metricDate, {
+                views: totalReelViews,
+                likes: totalReelLikes,
+                comments: totalReelComments,
+              });
+            });
+          }
+        }
+
+        // Format metrics for this profile
+        const profilePoints = (metrics || []).map((metric) => {
+          let value = 0;
+          
+          if (metricType === 'followers') {
+            value = metric.followers_delta || 0;
+          } else if (metricType === 'views') {
+            const dateStr = metric.date;
+            const reelData = reelDeltasByDate.get(dateStr) || { views: 0 };
+            value = reelData.views;
+          } else if (metricType === 'likes') {
+            const dateStr = metric.date;
+            const reelData = reelDeltasByDate.get(dateStr) || { likes: 0 };
+            value = reelData.likes;
+          } else if (metricType === 'comments') {
+            const dateStr = metric.date;
+            const reelData = reelDeltasByDate.get(dateStr) || { comments: 0 };
+            value = reelData.comments;
+          }
+
+          return {
+            date: metric.date,
+            value: value,
+          };
+        });
+
+        return {
+          username: profile.username,
+          tracking_id: profile.tracking_id,
+          points: profilePoints,
+        };
+      })
+    );
+
+    // Merge all profiles into a date-indexed structure
+    const dateMap = new Map();
+
+    profilesData.forEach((profile) => {
+      const label = `@${profile.username}`;
+      profile.points.forEach((point) => {
+        const date = point.date;
+        if (!date) return;
+
+        if (!dateMap.has(date)) {
+          dateMap.set(date, { date });
+        }
+        dateMap.get(date)[label] = point.value;
+      });
+    });
+
+    // Convert to array and sort by date
+    const chartData = Array.from(dateMap.values()).sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
+
+    console.log(`✅ [API] Graph data generated: ${chartData.length} data points across ${profilesData.length} profile(s)`);
+    if (chartData.length > 0) {
+      console.log(`   Date range: ${chartData[0].date} to ${chartData[chartData.length - 1].date}`);
+    }
+
+    res.json({
+      data: chartData,
+      profiles: profilesData.map(p => ({ username: p.username, tracking_id: p.tracking_id })),
+      metric: metricType,
+      days: daysNum,
+    });
+  } catch (error) {
+    console.error(`❌ [API] Error fetching graph data:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /profiles/:username - Latest snapshot + stats
 router.get("/:username", async (req, res) => {
   const { username } = req.params;
@@ -668,7 +872,7 @@ router.get("/:username/reels", async (req, res) => {
   const { username } = req.params;
   const offset = Number.isNaN(Number(req.query.offset)) ? 0 : Number(req.query.offset);
   const limitParam = Number(req.query.limit);
-  const limit = Number.isNaN(limitParam) ? 12 : Math.min(Math.max(limitParam, 1), 50); // cap to 50 per page
+  const limit = Number.isNaN(limitParam) ? 12 : Math.max(limitParam, 1); // Allow unlimited (no cap)
 
   const { data: profile } = await supabase
     .from("ig_profiles")
@@ -807,7 +1011,7 @@ router.get("/tracking/:tracking_id/reels", async (req, res) => {
   const { tracking_id } = req.params;
   const offset = Number.isNaN(Number(req.query.offset)) ? 0 : Number(req.query.offset);
   const limitParam = Number(req.query.limit);
-  const limit = Number.isNaN(limitParam) ? 12 : Math.min(Math.max(limitParam, 1), 50); // cap to 50 per page
+  const limit = Number.isNaN(limitParam) ? 12 : Math.max(limitParam, 1); // Allow unlimited (no cap)
 
   console.log(`\n🎬 [API] GET /profiles/tracking/${tracking_id}/reels - Request received`);
   console.log(`   Offset: ${offset}, Limit: ${limit}`);
@@ -1762,89 +1966,17 @@ router.get("/tracking/:tracking_id/daily-metrics-history", async (req, res) => {
 
   console.log(`✅ [API] Found ${metrics?.length || 0} daily metrics records`);
 
-  // Get all reels for this profile once
-  const { data: reels } = await supabase
-    .from("ig_profile_reels")
-    .select("id")
-    .eq("profile_id", profile.id);
-
-  const reelIds = (reels || []).map(r => r.id);
-
-  // Fetch all reel metrics for the date range at once (more efficient)
-  let allReelMetrics = [];
-  if (reelIds.length > 0) {
-    const { data: reelMetricsData } = await supabase
-      .from("ig_reel_metrics")
-      .select("*")
-      .in("reel_id", reelIds)
-      .gte("captured_at", queryStartDate + 'T00:00:00.000Z')
-      .order("captured_at", { ascending: true });
-
-    allReelMetrics = reelMetricsData || [];
-  }
-
-  // Group reel metrics by date and calculate daily growth
+  // Map metrics to chart data format - use stored values from daily_metrics table
   const metricsWithReels = (metrics || []).map((metric) => {
-    const metricDate = metric.date;
-    const nextDate = new Date(metricDate);
-    nextDate.setDate(nextDate.getDate() + 1);
-    const nextDateStr = nextDate.toISOString().split("T")[0];
-
-    let totalReelViews = 0;
-    let totalReelLikes = 0;
-    let totalReelComments = 0;
-
-    // Calculate reel growth for this date
-    if (reelIds.length > 0) {
-      const metricsForDate = allReelMetrics.filter(m => {
-        const capturedDate = new Date(m.captured_at).toISOString().split("T")[0];
-        return capturedDate === metricDate || capturedDate === nextDateStr;
-      });
-
-      // Group by reel_id and calculate growth
-      const reelMetricsMap = new Map();
-      metricsForDate.forEach(m => {
-        if (!reelMetricsMap.has(m.reel_id)) {
-          reelMetricsMap.set(m.reel_id, []);
-        }
-        reelMetricsMap.get(m.reel_id).push(m);
-      });
-
-      reelMetricsMap.forEach((reelMetrics) => {
-        // Sort by captured_at
-        reelMetrics.sort((a, b) => new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime());
-        
-        // Find metrics for this specific date
-        const dateMetrics = reelMetrics.filter(m => {
-          const capturedDate = new Date(m.captured_at).toISOString().split("T")[0];
-          return capturedDate === metricDate;
-        });
-        
-        if (dateMetrics.length > 0) {
-          // Get the latest metric for this date
-          const latest = dateMetrics[dateMetrics.length - 1];
-          // Get the previous metric (before this date)
-          const previousIndex = reelMetrics.indexOf(latest) - 1;
-          
-          if (previousIndex >= 0) {
-            const previous = reelMetrics[previousIndex];
-            totalReelViews += Math.max(0, (latest.view_count || 0) - (previous.view_count || 0));
-            totalReelLikes += Math.max(0, (latest.like_count || 0) - (previous.like_count || 0));
-            totalReelComments += Math.max(0, (latest.comment_count || 0) - (previous.comment_count || 0));
-          }
-        }
-      });
-    }
-
     return {
       date: metric.date,
       followers: metric.followers_delta || 0,
       following: metric.following_delta || 0,
       media: metric.posts_delta || metric.media_delta || 0,
       clips: metric.clips_delta || 0,
-      views: totalReelViews,
-      likes: totalReelLikes,
-      comments: totalReelComments,
+      views: metric.views_delta || 0,
+      likes: metric.likes_delta || 0,
+      comments: metric.comments_delta || 0,
     };
   });
 

@@ -27,8 +27,11 @@ const cron = require("node-cron");
 const supabase = require("./services/supabase");
 const { trackProfile } = require("./services/tracking");
 const { addJob, processQueue, getQueueStatus } = require("./services/queue");
+const { trackAllTwitterAnalytics } = require("./services/twitter-analytics");
+const { updateDailyMetricsForAllProfiles } = require("./services/daily-metrics");
 const profilesRouter = require("./routes/profiles");
 const reelsRouter = require("./routes/reels");
+const twitterRouter = require("./routes/twitter");
 
 // Import rate limit constant for logging
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
@@ -165,7 +168,7 @@ function getRelativeTime(date) {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 
 // Middleware
 // CORS configuration - allow Vercel frontend and localhost for development
@@ -174,7 +177,9 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   : [
       'http://localhost:3000',
       'http://localhost:3001',
+      'http://localhost:3002',
       'http://127.0.0.1:3000',
+      'http://127.0.0.1:3002',
       'https://fanslink-instagram-tracking.vercel.app'
     ];
 
@@ -210,6 +215,7 @@ app.use((req, res, next) => {
 // Routes
 app.use("/profiles", profilesRouter);
 app.use("/reels", reelsRouter);
+app.use("/twitter", twitterRouter);
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -231,6 +237,18 @@ app.post("/queue/process", (req, res) => {
     message: "Queue processing triggered",
     status: status
   });
+});
+
+// Manual daily metrics update endpoint
+app.post("/daily-metrics/update", async (req, res) => {
+  console.log(`\n📊 [API] Manual daily metrics update requested`);
+  try {
+    const result = await updateDailyMetricsForAllProfiles();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error(`❌ [API] Error updating daily metrics:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Manual cron job trigger endpoint (for testing)
@@ -322,7 +340,8 @@ app.get("/", (req, res) => {
     version: "1.0.0",
     endpoints: {
       health: "/health",
-      profiles: "/profiles"
+      profiles: "/profiles",
+      twitter: "/twitter"
     }
   });
 });
@@ -338,6 +357,16 @@ const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
   console.log(`🌍 [CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
   
   try {
+    // First, update daily metrics for all profiles (ensures graph data is always available)
+    console.log(`\n📊 [CRON] Updating daily metrics for all profiles...`);
+    try {
+      const metricsResult = await updateDailyMetricsForAllProfiles();
+      console.log(`✅ [CRON] Daily metrics updated: ${metricsResult.total} profiles processed`);
+    } catch (metricsError) {
+      console.error(`❌ [CRON] Failed to update daily metrics:`, metricsError.message);
+      // Continue with tracking even if metrics update fails
+    }
+
     // Get all tracked profiles
     const { data: profiles, error } = await supabase
       .from("ig_profiles")
@@ -492,6 +521,41 @@ if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
 } else {
   console.log(`ℹ️  [CRON] Periodic refresh job disabled (REFRESH_CRON_SCHEDULE not set or empty)`);
 }
+
+// Twitter Analytics Cron Job: Track Twitter profiles and tweets daily
+// Runs at 3:00 AM IST (after Instagram cron) to avoid conflicts
+const TWITTER_CRON_SCHEDULE = process.env.TWITTER_CRON_SCHEDULE || "0 3 * * *"; // 3:00 AM IST daily
+
+const twitterCronTask = cron.schedule(TWITTER_CRON_SCHEDULE, async () => {
+  const now = new Date();
+  console.log(`\n⏰ [TWITTER CRON] Daily Twitter analytics tracking started at 3:00 AM IST...`);
+  console.log(`📅 [TWITTER CRON] Current time: ${now.toISOString()} (UTC)`);
+  console.log(`📅 [TWITTER CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
+  console.log(`🌍 [TWITTER CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
+  
+  try {
+    const result = await trackAllTwitterAnalytics();
+    
+    console.log(`\n✅ [TWITTER CRON] Twitter analytics tracking completed`);
+    console.log(`   - Processed: ${result.processed}/${result.total}`);
+    console.log(`   - Success: ${result.success}`);
+    console.log(`   - Errors: ${result.errors}`);
+    
+    // Log next execution time
+    const nextExecution = getNextCronExecution(TWITTER_CRON_SCHEDULE);
+    if (nextExecution) {
+      const nextTime = formatDateWithTimezone(nextExecution);
+      console.log(`📅 [TWITTER CRON] Next Twitter tracking: ${nextTime.utc} (${nextTime.relative})`);
+    }
+  } catch (err) {
+    console.error("❌ [TWITTER CRON] Fatal error in Twitter cron job:", err.message);
+  }
+}, {
+  scheduled: true,
+  timezone: TIMEZONE
+});
+
+console.log(`✅ [TWITTER CRON] Twitter analytics cron scheduled: ${TWITTER_CRON_SCHEDULE} (3:00 AM IST daily)`);
 
 // Handle command line arguments
 const args = process.argv.slice(2);

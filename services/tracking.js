@@ -20,6 +20,12 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     if (!igData) throw new Error("Failed to fetch Instagram data");
 
     console.log(`Fetched data for ${username} (ID: ${igData.id})`);
+    if (igData.biography) {
+      console.log(`   Bio: ${igData.biography.substring(0, 50)}${igData.biography.length > 50 ? '...' : ''}`);
+    }
+    if (igData.external_url) {
+      console.log(`   External Link: ${igData.external_url}`);
+    }
 
     // 2. Upsert Profile (static info)
     // If customTrackingId is provided, use it (user-specific tracking, starts fresh)
@@ -57,6 +63,8 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       full_name: igData.full_name,
       avatar_url: igData.profile_pic_url,
       profile_picture: igData.profile_pic_url, // Save profile picture URL
+      biography: igData.biography || null, // Save bio
+      external_url: igData.external_url || null, // Save external link (link in bio)
       last_snapshot_id: null // Will update later
     };
     
@@ -387,7 +395,8 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         following: igData.following,
         media_count: igData.media_count,
         clips_count: igData.clips_count,
-        biography: igData.biography,
+        biography: igData.biography || null,
+        external_url: igData.external_url || null, // Save external link
         avatar_url: igData.profile_pic_url,
         raw_json: igData
       })
@@ -655,6 +664,11 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     console.log(`   📅 Reels from previous days: ${latest12Reels.length - todayReelsCount}`);
     console.log(`\n📊 [${username}] Processing and calculating deltas for these 12 reels...`);
 
+    // Accumulate daily reel growth totals
+    let totalDailyViewsGrowth = 0;
+    let totalDailyLikesGrowth = 0;
+    let totalDailyCommentsGrowth = 0;
+
     // Upsert reels and track metrics (ONLY the latest 12 reels)
     for (let i = 0; i < shortcodesToProcess.length; i++) {
       const shortcode = shortcodesToProcess[i];
@@ -707,6 +721,11 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         likeGrowth = currLikes - prevLikes;
         commentGrowth = currComments - prevComments;
         
+        // Accumulate daily totals (only positive growth to avoid negative spikes)
+        if (viewGrowth > 0) totalDailyViewsGrowth += viewGrowth;
+        if (likeGrowth > 0) totalDailyLikesGrowth += likeGrowth;
+        if (commentGrowth > 0) totalDailyCommentsGrowth += commentGrowth;
+        
         // Log growth calculation from DATABASE - ALWAYS show view count tracking
         console.log(`\n🎬 [${username}] Reel Growth Calculation (${shortcode}):`);
         console.log(`   Previous (from DB): Views=${prevViews.toLocaleString()}, Likes=${prevLikes.toLocaleString()}, Comments=${prevComments.toLocaleString()}`);
@@ -737,6 +756,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         console.log(`   📊 View Count Tracking: ${prevViews.toLocaleString()} → ${currViews.toLocaleString()} (Change: ${viewGrowth > 0 ? '+' : ''}${viewGrowth.toLocaleString()})`);
       } else {
         console.log(`\n🎬 [${username}] New reel detected: ${shortcode} (not in database yet - no previous data for comparison)`);
+        // For new reels, we don't count initial values as growth (they're baseline)
       }
 
       // Upsert reel with current metrics and growth deltas to DATABASE
@@ -870,11 +890,26 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       console.log(`   Daily Delta (for this day only): ${dailyDelta > 0 ? '+' : ''}${dailyDelta.toLocaleString()}`);
       console.log(`   ✅ This day's delta is tracked separately from other days`);
       
+      // Calculate deltas for all metrics
+      const followingDelta = (newSnapshot.following || 0) - (dailyRow.following_open || newSnapshot.following || 0);
+      const mediaDelta = (newSnapshot.media_count || 0) - (dailyRow.media_open || newSnapshot.media_count || 0);
+      const clipsDelta = (newSnapshot.clips_count || 0) - (dailyRow.clips_open || newSnapshot.clips_count || 0);
+      
       const { error: updateError } = await supabase
         .from("ig_profile_daily_metrics")
         .update({
           followers_close: newSnapshot.followers,
-          followers_delta: dailyDelta
+          followers_delta: dailyDelta,
+          following_close: newSnapshot.following || 0,
+          following_delta: followingDelta,
+          media_close: newSnapshot.media_count || 0,
+          media_delta: mediaDelta,
+          posts_delta: mediaDelta,
+          clips_close: newSnapshot.clips_count || 0,
+          clips_delta: clipsDelta,
+          views_delta: totalDailyViewsGrowth,
+          likes_delta: totalDailyLikesGrowth,
+          comments_delta: totalDailyCommentsGrowth,
         })
         .eq("profile_id", profile.id)
         .eq("date", todayDateString);
@@ -895,27 +930,43 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       
       let todayOpen = newSnapshot.followers; // Default: use current as baseline for first tracking
       let todayDelta = 0; // First tracking: delta is 0 (baseline)
+      let yesterdayRow = null; // Initialize to null - will be fetched if needed
       
       if (!isFirstTracking) {
         // Not first tracking - get yesterday's close value for continuity
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split("T")[0];
-      
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split("T")[0];
+        
         // Get yesterday's close value if it exists (and is from this tracking session)
-      const { data: yesterdayRow } = await supabase
-        .from("ig_profile_daily_metrics")
-        .select("followers_close")
-        .eq("profile_id", profile.id)
-        .eq("date", yesterdayStr)
+        const { data: fetchedYesterdayRow } = await supabase
+          .from("ig_profile_daily_metrics")
+          .select("followers_close, following_close, media_close, clips_close")
+          .eq("profile_id", profile.id)
+          .eq("date", yesterdayStr)
           .gte("date", trackingStartDate) // Only from this tracking session
-        .maybeSingle();
-      
-      if (yesterdayRow) {
+          .maybeSingle();
+        
+        yesterdayRow = fetchedYesterdayRow || null;
+        
+        if (yesterdayRow) {
           todayOpen = yesterdayRow.followers_close;
           todayDelta = newSnapshot.followers - todayOpen;
         }
       }
+      
+      // Calculate other metrics deltas
+      const followingOpen = yesterdayRow?.following_close || newSnapshot.following || 0;
+      const followingClose = newSnapshot.following || 0;
+      const followingDelta = followingClose - followingOpen;
+      
+      const mediaOpen = yesterdayRow?.media_close || newSnapshot.media_count || 0;
+      const mediaClose = newSnapshot.media_count || 0;
+      const mediaDelta = mediaClose - mediaOpen;
+      
+      const clipsOpen = yesterdayRow?.clips_close || newSnapshot.clips_count || 0;
+      const clipsClose = newSnapshot.clips_count || 0;
+      const clipsDelta = clipsClose - clipsOpen;
       
       console.log(`\n📊 [${username}] Creating new daily row for ${todayDateString}:`);
       if (isFirstTracking) {
@@ -936,7 +987,20 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
         date: todayDateString,
         followers_open: todayOpen,
         followers_close: newSnapshot.followers,
-        followers_delta: todayDelta
+        followers_delta: todayDelta,
+        following_open: followingOpen,
+        following_close: followingClose,
+        following_delta: followingDelta,
+        media_open: mediaOpen,
+        media_close: mediaClose,
+        media_delta: mediaDelta,
+        posts_delta: mediaDelta, // Alias for backwards compatibility
+        clips_open: clipsOpen,
+        clips_close: clipsClose,
+        clips_delta: clipsDelta,
+        views_delta: totalDailyViewsGrowth,
+        likes_delta: totalDailyLikesGrowth,
+        comments_delta: totalDailyCommentsGrowth,
       }).select().single();
       
       if (insertError) {
@@ -960,6 +1024,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     console.log(`   ✅ Reels: ${shortcodesToProcess.length} items saved/updated in ig_profile_reels`);
     console.log(`   ✅ Reel Metrics: ${shortcodesToProcess.length} snapshots saved to ig_reel_metrics`);
     console.log(`   ✅ Daily Metrics: Updated in ig_profile_daily_metrics for ${todayDateString}`);
+    console.log(`   ✅ Daily Reel Growth: Views=${totalDailyViewsGrowth > 0 ? '+' : ''}${totalDailyViewsGrowth.toLocaleString()}, Likes=${totalDailyLikesGrowth > 0 ? '+' : ''}${totalDailyLikesGrowth.toLocaleString()}, Comments=${totalDailyCommentsGrowth > 0 ? '+' : ''}${totalDailyCommentsGrowth.toLocaleString()}`);
     console.log(`\n🎯 Next refresh will compare with snapshot ${newSnapshot.id} from the database!\n`);
     
     return { profile, snapshot: newSnapshot };
