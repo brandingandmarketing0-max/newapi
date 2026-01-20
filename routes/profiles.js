@@ -1965,6 +1965,23 @@ router.get("/tracking/:tracking_id/daily-metrics-history", async (req, res) => {
   }
 
   console.log(`✅ [API] Found ${metrics?.length || 0} daily metrics records`);
+  
+  if (metrics && metrics.length > 0) {
+    console.log(`   📊 Sample metrics (first record):`, {
+      date: metrics[0].date,
+      followers_delta: metrics[0].followers_delta,
+      views_delta: metrics[0].views_delta,
+      likes_delta: metrics[0].likes_delta,
+      comments_delta: metrics[0].comments_delta
+    });
+    console.log(`   📊 Sample metrics (last record):`, {
+      date: metrics[metrics.length - 1].date,
+      followers_delta: metrics[metrics.length - 1].followers_delta,
+      views_delta: metrics[metrics.length - 1].views_delta,
+      likes_delta: metrics[metrics.length - 1].likes_delta,
+      comments_delta: metrics[metrics.length - 1].comments_delta
+    });
+  }
 
   // Map metrics to chart data format - use stored values from daily_metrics table
   const metricsWithReels = (metrics || []).map((metric) => {
@@ -1980,6 +1997,7 @@ router.get("/tracking/:tracking_id/daily-metrics-history", async (req, res) => {
     };
   });
 
+  console.log(`   📈 Returning ${metricsWithReels.length} data points for chart`);
   res.json({ data: metricsWithReels });
 });
 

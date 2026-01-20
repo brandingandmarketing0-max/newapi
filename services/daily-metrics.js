@@ -59,7 +59,37 @@ async function updateDailyMetricsForAllProfiles() {
           .limit(1)
           .maybeSingle();
 
-        // If no snapshots for today, get the most recent snapshot (for closing value)
+        // Get yesterday's date for comparison
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+        // Get yesterday's closing snapshot (last snapshot from yesterday)
+        const { data: yesterdaySnapshot } = await supabase
+          .from('ig_profile_snapshots')
+          .select('followers, following, media_count, clips_count, captured_at')
+          .eq('profile_id', profile.id)
+          .gte('captured_at', `${yesterdayStr}T00:00:00.000Z`)
+          .lte('captured_at', `${yesterdayStr}T23:59:59.999Z`)
+          .order('captured_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        // If no yesterday snapshot, get the most recent snapshot before today
+        let baselineSnapshot = yesterdaySnapshot;
+        if (!baselineSnapshot) {
+          const { data: recentSnapshot } = await supabase
+            .from('ig_profile_snapshots')
+            .select('followers, following, media_count, clips_count, captured_at')
+            .eq('profile_id', profile.id)
+            .lt('captured_at', `${today}T00:00:00.000Z`)
+            .order('captured_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          baselineSnapshot = recentSnapshot;
+        }
+
+        // Get today's closing snapshot (last snapshot of today, or latest if none today)
         let latestSnapshot = lastSnapshot;
         if (!latestSnapshot) {
           const { data: recentSnapshot } = await supabase
@@ -78,20 +108,31 @@ async function updateDailyMetricsForAllProfiles() {
         }
 
         // Calculate open/close values for all metrics
-        const followersOpen = firstSnapshot?.followers || latestSnapshot.followers || 0;
-        const followersClose = latestSnapshot.followers || 0;
+        // If we have snapshots today: open = first snapshot today, close = last snapshot today
+        // If no snapshots today: open = yesterday's close (or baseline), close = latest snapshot
+        const hasTodaySnapshots = !!firstSnapshot || !!lastSnapshot;
+        const followersOpen = hasTodaySnapshots 
+          ? (firstSnapshot?.followers ?? baselineSnapshot?.followers ?? latestSnapshot.followers ?? 0)
+          : (baselineSnapshot?.followers ?? latestSnapshot.followers ?? 0);
+        const followersClose = latestSnapshot.followers ?? 0;
         const followersDelta = followersClose - followersOpen;
 
-        const followingOpen = firstSnapshot?.following || latestSnapshot.following || 0;
-        const followingClose = latestSnapshot.following || 0;
+        const followingOpen = hasTodaySnapshots 
+          ? (firstSnapshot?.following ?? baselineSnapshot?.following ?? latestSnapshot.following ?? 0)
+          : (baselineSnapshot?.following ?? latestSnapshot.following ?? 0);
+        const followingClose = latestSnapshot.following ?? 0;
         const followingDelta = followingClose - followingOpen;
 
-        const mediaOpen = firstSnapshot?.media_count || latestSnapshot.media_count || 0;
-        const mediaClose = latestSnapshot.media_count || 0;
+        const mediaOpen = hasTodaySnapshots 
+          ? (firstSnapshot?.media_count ?? baselineSnapshot?.media_count ?? latestSnapshot.media_count ?? 0)
+          : (baselineSnapshot?.media_count ?? latestSnapshot.media_count ?? 0);
+        const mediaClose = latestSnapshot.media_count ?? 0;
         const mediaDelta = mediaClose - mediaOpen;
 
-        const clipsOpen = firstSnapshot?.clips_count || latestSnapshot.clips_count || 0;
-        const clipsClose = latestSnapshot.clips_count || 0;
+        const clipsOpen = hasTodaySnapshots 
+          ? (firstSnapshot?.clips_count ?? baselineSnapshot?.clips_count ?? latestSnapshot.clips_count ?? 0)
+          : (baselineSnapshot?.clips_count ?? latestSnapshot.clips_count ?? 0);
+        const clipsClose = latestSnapshot.clips_count ?? 0;
         const clipsDelta = clipsClose - clipsOpen;
 
         // Calculate daily reel growth (views, likes, comments) from reel metrics

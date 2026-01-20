@@ -32,3 +32,7 @@ COMMENT ON COLUMN ig_profile_snapshots.external_url IS 'External link in Instagr
 -- WHERE table_name = 'ig_profile_snapshots' 
 --   AND column_name IN ('biography', 'external_url');
 
+
+
+
+
