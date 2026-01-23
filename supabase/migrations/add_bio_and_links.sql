@@ -36,3 +36,9 @@ COMMENT ON COLUMN ig_profile_snapshots.external_url IS 'External link in Instagr
 
 
 
+
+
+
+
+
+

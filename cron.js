@@ -11,7 +11,7 @@
  * 
  * Usage in Railway:
  * 1. Add a new "Cron" service in Railway
- * 2. Set the schedule (e.g., "0 0 * * *" for daily at midnight)
+ * 2. Set the schedule: "30 22 * * *" (3:30 AM IST / 22:00 UTC daily)
  * 3. Set the command: "node cron.js"
  * 4. Share environment variables with main service
  */

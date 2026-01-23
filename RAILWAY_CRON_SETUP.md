@@ -21,7 +21,7 @@ Railway supports **native cron jobs** that run independently of your main servic
 2. **Configure the Cron Service:**
    - **Root Directory**: `src-backup-railway`
    - **Command**: `node cron.js`
-   - **Schedule**: `0 0 * * *` (daily at midnight)
+   - **Schedule**: `30 22 * * *` (daily at 3:30 AM IST / 22:00 UTC)
    - **Environment Variables**: Share variables from your main service
 
 3. **Add Environment Variable:**
@@ -43,7 +43,7 @@ Railway supports **native cron jobs** that run independently of your main servic
 Create **two separate cron services** for different schedules:
 
 #### Daily Cron Service:
-- **Schedule**: `0 0 * * *` (midnight daily)
+- **Schedule**: `30 22 * * *` (3:30 AM IST / 22:00 UTC daily)
 - **Command**: `node cron.js`
 - **Environment**: `CRON_TYPE=daily`
 
@@ -56,6 +56,7 @@ Create **two separate cron services** for different schedules:
 
 | Schedule | Description | Example |
 |----------|-------------|---------|
+| `30 22 * * *` | Daily at 3:30 AM IST | Every day at 3:30 AM IST (22:00 UTC) |
 | `0 0 * * *` | Daily at midnight | Every day at 00:00 |
 | `0 2 * * *` | Daily at 2 AM | Every day at 02:00 |
 | `0 */6 * * *` | Every 6 hours | 00:00, 06:00, 12:00, 18:00 |
