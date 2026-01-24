@@ -21,7 +21,9 @@ Railway supports **native cron jobs** that run independently of your main servic
 2. **Configure the Cron Service:**
    - **Root Directory**: `src-backup-railway`
    - **Command**: `node cron.js`
-   - **Schedule**: `30 22 * * *` (daily at 3:30 AM IST / 22:00 UTC)
+   - **Schedule**: `0 19 * * *` (daily at 8:00 PM UK time / 19:00 UTC)
+     - Note: 19:00 UTC = 8 PM BST (summer) / 7 PM GMT (winter)
+     - For consistent 8 PM UK time: use `0 20 * * *` (8 PM GMT / 9 PM BST)
    - **Environment Variables**: Share variables from your main service
 
 3. **Add Environment Variable:**
@@ -43,7 +45,9 @@ Railway supports **native cron jobs** that run independently of your main servic
 Create **two separate cron services** for different schedules:
 
 #### Daily Cron Service:
-- **Schedule**: `30 22 * * *` (3:30 AM IST / 22:00 UTC daily)
+- **Schedule**: `0 19 * * *` (8:00 PM UK time / 19:00 UTC daily)
+  - 19:00 UTC = 8 PM BST (summer) / 7 PM GMT (winter)
+  - For consistent 8 PM UK time: use `0 20 * * *` (8 PM GMT / 9 PM BST)
 - **Command**: `node cron.js`
 - **Environment**: `CRON_TYPE=daily`
 
@@ -56,13 +60,14 @@ Create **two separate cron services** for different schedules:
 
 | Schedule | Description | Example |
 |----------|-------------|---------|
-| `30 22 * * *` | Daily at 3:30 AM IST | Every day at 3:30 AM IST (22:00 UTC) |
-| `0 0 * * *` | Daily at midnight | Every day at 00:00 |
-| `0 2 * * *` | Daily at 2 AM | Every day at 02:00 |
-| `0 */6 * * *` | Every 6 hours | 00:00, 06:00, 12:00, 18:00 |
-| `0 */12 * * *` | Every 12 hours | 00:00, 12:00 |
-| `0 0 * * 0` | Weekly on Sunday | Every Sunday at midnight |
-| `0 0 1 * *` | Monthly on 1st | First day of month at midnight |
+| `0 19 * * *` | Daily at 8 PM UK (BST) | Every day at 8 PM UK time (19:00 UTC) |
+| `0 20 * * *` | Daily at 8 PM UK (GMT) | Every day at 8 PM UK time (20:00 UTC) |
+| `0 0 * * *` | Daily at midnight UTC | Every day at 00:00 UTC |
+| `0 2 * * *` | Daily at 2 AM UTC | Every day at 02:00 UTC |
+| `0 */6 * * *` | Every 6 hours | 00:00, 06:00, 12:00, 18:00 UTC |
+| `0 */12 * * *` | Every 12 hours | 00:00, 12:00 UTC |
+| `0 0 * * 0` | Weekly on Sunday | Every Sunday at midnight UTC |
+| `0 0 1 * *` | Monthly on 1st | First day of month at midnight UTC |
 
 ## ⚙️ How It Works
 
