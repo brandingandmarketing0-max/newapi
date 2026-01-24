@@ -828,12 +828,18 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       }
 
       // Store reel metrics history in DATABASE (track growth over time) - always store, even if no growth
+      // ⚠️ CRITICAL: Each tracking run creates a NEW row in ig_reel_metrics with captured_at timestamp
+      // ⚠️ DATA PRESERVATION: This table stores historical snapshots - rows are NEVER deleted
+      // ⚠️ DAILY TRACKING: When cron runs daily, new rows are inserted for each reel, preserving all history
       if (savedReel) {
+        // ⚠️ INSERT only - never UPDATE or DELETE - each snapshot is preserved forever
         const { data: metricsData, error: metricsError } = await supabase.from("ig_reel_metrics").insert({
           reel_id: savedReel.id,
           view_count: savedReel.view_count,
           like_count: savedReel.like_count,
           comment_count: savedReel.comment_count
+          // captured_at is automatically set to NOW() by database default
+          // This creates a new row each time tracking runs, preserving historical data
         }).select().single();
 
         if (metricsError) {
@@ -867,16 +873,19 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     // rows so past content is still visible in the dashboard and import flow.
 
     // 8. Update Daily Metrics in DATABASE (Upsert for today)
-    // IMPORTANT: Each day gets its own separate row - delta is calculated per day independently
+    // ⚠️ CRITICAL: Each day gets its own separate row - delta is calculated per day independently
+    // ⚠️ DATA PRESERVATION: This code NEVER deletes daily metrics - only INSERTs new rows or UPDATEs today's row
+    // ⚠️ HISTORICAL DATA: All previous days' data is ALWAYS preserved and never modified
     const todayDateString = new Date().toISOString().split("T")[0];
     console.log(`\n💾 [${username}] Updating daily metrics in database for ${todayDateString}...`);
     
     // Check if row exists for TODAY in DATABASE (each day is separate)
+    // ⚠️ SAFEGUARD: We only query for today's date - historical rows are never touched
     const { data: dailyRow } = await supabase
       .from("ig_profile_daily_metrics")
       .select("*")
       .eq("profile_id", profile.id)
-      .eq("date", todayDateString)
+      .eq("date", todayDateString) // ⚠️ Only checking today - historical data is never queried or modified
       .maybeSingle();
 
     if (dailyRow) {
@@ -895,6 +904,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       const mediaDelta = (newSnapshot.media_count || 0) - (dailyRow.media_open || newSnapshot.media_count || 0);
       const clipsDelta = (newSnapshot.clips_count || 0) - (dailyRow.clips_open || newSnapshot.clips_count || 0);
       
+      // ⚠️ CRITICAL: The WHERE clause ensures we ONLY update today's row, never historical data
       const { error: updateError } = await supabase
         .from("ig_profile_daily_metrics")
         .update({
@@ -912,12 +922,13 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
           comments_delta: totalDailyCommentsGrowth,
         })
         .eq("profile_id", profile.id)
-        .eq("date", todayDateString);
+        .eq("date", todayDateString); // ⚠️ SAFEGUARD: Only updates today's row - historical data is never modified
       
       if (updateError) {
         console.error(`❌ Failed to update daily metrics: ${updateError.message}`);
       } else {
         console.log(`✅ Daily metrics updated in database for ${todayDateString}`);
+        console.log(`   📊 Historical data preserved - only today's row was updated`);
       }
     } else {
       // No row exists for today - CREATE a new one (first refresh of the day)
@@ -981,7 +992,9 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       console.log(`   Daily Delta (for this day only): ${todayDelta > 0 ? '+' : ''}${todayDelta.toLocaleString()}`);
       }
       console.log(`   ✅ This day's tracking is completely separate from previous days`);
+      console.log(`   📊 Creating new row - all historical daily metrics data remains intact`);
       
+      // ⚠️ CRITICAL: This INSERT creates a new row - it NEVER deletes or modifies existing historical data
       const { data: newDailyRow, error: insertError } = await supabase.from("ig_profile_daily_metrics").insert({
         profile_id: profile.id,
         date: todayDateString,
@@ -1008,6 +1021,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       } else {
         console.log(`✅ Daily metrics created in database for ${todayDateString} (ID: ${newDailyRow.id})`);
         console.log(`   ✅ Each day has its own row - no data mixing between days`);
+        console.log(`   📊 All previous days' data is preserved and never deleted`);
       }
     }
 

@@ -1,6 +1,12 @@
 /**
  * Daily Metrics Service
  * Updates daily metrics for all profiles by calculating from snapshots
+ * 
+ * ⚠️ CRITICAL: This service NEVER deletes daily metrics data.
+ * - Only INSERTs new rows for new dates
+ * - Only UPDATEs rows for today's date
+ * - Historical data is ALWAYS preserved
+ * - Each day gets its own separate row that is never deleted
  */
 
 const supabase = require("./supabase");
@@ -136,6 +142,9 @@ async function updateDailyMetricsForAllProfiles() {
         const clipsDelta = clipsClose - clipsOpen;
 
         // Calculate daily reel growth (views, likes, comments) from reel metrics
+        // ⚠️ CRITICAL: This calculates deltas from ig_reel_metrics table which stores historical snapshots
+        // ⚠️ DATA PRESERVATION: Each reel metrics row is NEVER deleted - we only INSERT new rows daily
+        // ⚠️ DAILY DELTA: We compare today's latest snapshot vs yesterday's latest snapshot to get exact daily growth
         let totalViewsDelta = 0;
         let totalLikesDelta = 0;
         let totalCommentsDelta = 0;
@@ -155,8 +164,11 @@ async function updateDailyMetricsForAllProfiles() {
           const yesterdayStr = yesterday.toISOString().split('T')[0];
 
           // For each reel, calculate growth from metrics snapshots
+          // ⚠️ Each reel has multiple rows in ig_reel_metrics (one per tracking run)
+          // ⚠️ We get the LATEST snapshot from today and compare with LATEST from before today
           for (const reelId of reelIds) {
-            // Get metrics snapshots for today and yesterday
+            // Get metrics snapshots for today - get the latest one (most recent tracking run today)
+            // ⚠️ Multiple rows may exist for today if tracking ran multiple times - we take the latest
             const { data: todayMetrics } = await supabase
               .from('ig_reel_metrics')
               .select('view_count, like_count, comment_count, captured_at')
@@ -168,6 +180,7 @@ async function updateDailyMetricsForAllProfiles() {
               .maybeSingle();
 
             // Get the most recent metric before today (could be yesterday or earlier)
+            // ⚠️ This gets the latest snapshot from before today to calculate the delta
             const { data: previousMetrics } = await supabase
               .from('ig_reel_metrics')
               .select('view_count, like_count, comment_count, captured_at')
@@ -191,15 +204,17 @@ async function updateDailyMetricsForAllProfiles() {
         }
 
         // Check if daily metrics row already exists for today
+        // ⚠️ IMPORTANT: We only check for TODAY's date - we NEVER touch historical data
         const { data: existingMetrics } = await supabase
           .from('ig_profile_daily_metrics')
           .select('id')
           .eq('profile_id', profile.id)
-          .eq('date', today)
+          .eq('date', today) // ⚠️ Only checking today - historical rows are never touched
           .maybeSingle();
 
         if (existingMetrics) {
-          // Update existing row
+          // Update existing row for TODAY ONLY
+          // ⚠️ CRITICAL: The WHERE clause ensures we ONLY update today's row, never historical data
           const { error: updateError } = await supabase
             .from('ig_profile_daily_metrics')
             .update({
@@ -221,7 +236,7 @@ async function updateDailyMetricsForAllProfiles() {
               comments_delta: totalCommentsDelta,
             })
             .eq('profile_id', profile.id)
-            .eq('date', today);
+            .eq('date', today); // ⚠️ SAFEGUARD: Only updates today's row, historical data is never modified
 
           if (updateError) {
             console.error(`   ❌ @${profile.username}: Failed to update - ${updateError.message}`);
@@ -229,9 +244,11 @@ async function updateDailyMetricsForAllProfiles() {
           } else {
             updated++;
             console.log(`   ✅ @${profile.username}: Updated (+${followersDelta.toLocaleString()} followers, +${followingDelta.toLocaleString()} following, +${mediaDelta.toLocaleString()} media, +${clipsDelta.toLocaleString()} clips, +${totalViewsDelta.toLocaleString()} views, +${totalLikesDelta.toLocaleString()} likes, +${totalCommentsDelta.toLocaleString()} comments)`);
+            console.log(`   📊 Historical data preserved - only today's row was updated`);
           }
         } else {
-          // Create new row
+          // Create new row for today
+          // ⚠️ CRITICAL: This INSERT creates a new row - it NEVER deletes or modifies existing historical data
           const { error: insertError } = await supabase
             .from('ig_profile_daily_metrics')
             .insert({
@@ -261,6 +278,7 @@ async function updateDailyMetricsForAllProfiles() {
           } else {
             created++;
             console.log(`   ✅ @${profile.username}: Created (+${followersDelta.toLocaleString()} followers, +${followingDelta.toLocaleString()} following, +${mediaDelta.toLocaleString()} media, +${clipsDelta.toLocaleString()} clips, +${totalViewsDelta.toLocaleString()} views, +${totalLikesDelta.toLocaleString()} likes, +${totalCommentsDelta.toLocaleString()} comments)`);
+            console.log(`   📊 New daily metrics row created - all historical data remains intact`);
           }
         }
       } catch (error) {

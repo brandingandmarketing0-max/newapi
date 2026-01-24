@@ -1940,23 +1940,29 @@ router.get("/tracking/:tracking_id/daily-metrics-history", async (req, res) => {
     return res.status(404).json({ error: "Profile not found" });
   }
 
-  // Get tracking start date
+  // ⚠️ CRITICAL: Return ALL historical daily metrics data - never filter by date
+  // The 'days' parameter is only used for logging/info, but we return ALL data
+  // This ensures no historical data is lost or hidden from the chart
+  // Historical data is NEVER deleted from the database, so we should return it all
+  
+  // Get tracking start date (for reference only, not for filtering)
   const trackingStartTime = profile.updated_at || profile.created_at;
   const trackingStartDate = new Date(trackingStartTime).toISOString().split("T")[0];
 
-  // Calculate date range
+  // Calculate date range (for logging only - we don't use this to filter)
   const since = new Date();
   since.setDate(since.getDate() - daysNum);
   const startDate = since.toISOString().split("T")[0];
 
-  // Fetch daily metrics from tracking start or last N days, whichever is more recent
-  const queryStartDate = trackingStartDate > startDate ? trackingStartDate : startDate;
-
+  // ⚠️ IMPORTANT: Fetch ALL daily metrics - no date filtering
+  // This ensures all historical data is returned, not just the last N days
+  // Each day's data is preserved in the database and should be available
   const { data: metrics, error } = await supabase
     .from("ig_profile_daily_metrics")
     .select("*")
     .eq("profile_id", profile.id)
-    .gte("date", queryStartDate)
+    // ⚠️ REMOVED: .gte("date", queryStartDate) - this was filtering out old data!
+    // Now we return ALL data regardless of date
     .order("date", { ascending: true });
 
   if (error) {
@@ -1964,9 +1970,11 @@ router.get("/tracking/:tracking_id/daily-metrics-history", async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 
-  console.log(`✅ [API] Found ${metrics?.length || 0} daily metrics records`);
+  console.log(`✅ [API] Found ${metrics?.length || 0} daily metrics records (ALL historical data)`);
+  console.log(`   📊 Returning ALL historical data - no date filtering applied`);
   
   if (metrics && metrics.length > 0) {
+    console.log(`   📊 Date range: ${metrics[0].date} to ${metrics[metrics.length - 1].date}`);
     console.log(`   📊 Sample metrics (first record):`, {
       date: metrics[0].date,
       followers_delta: metrics[0].followers_delta,

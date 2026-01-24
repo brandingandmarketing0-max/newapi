@@ -38,3 +38,4 @@ COMMENT ON COLUMN ig_profile_daily_metrics.clips_delta IS 'Change in clips count
 
 
 
+
