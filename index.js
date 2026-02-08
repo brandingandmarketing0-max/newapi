@@ -37,9 +37,9 @@ const twitterRouter = require("./routes/twitter");
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
 
 // Configurable cron schedules
-// Daily cron: Runs at 3:30 AM IST every night - "30 3 * * *" (when TZ=Asia/Kolkata)
+// Daily cron: Runs at 4:00 AM IST every night - "0 4 * * *" (when TZ=Asia/Kolkata)
 // Refresh cron: Optional periodic refresh (default: every 12 hours)
-const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "30 3 * * *"; // 3:30 AM IST daily
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "0 4 * * *"; // 4:00 AM IST daily
 const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
 // Timezone: Set to IST (Indian Standard Time) by default
@@ -317,7 +317,7 @@ app.get("/cron/schedule", (req, res) => {
     schedules: {
       daily: {
         cron: DAILY_CRON_SCHEDULE,
-        description: "Daily refresh at 3:30 AM IST",
+        description: "Daily refresh at 4:00 AM IST",
         nextExecution: formatDateWithTimezone(nextDaily),
         nextExecutionIST: nextDaily ? new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" }) : null,
         enabled: true
@@ -329,7 +329,7 @@ app.get("/cron/schedule", (req, res) => {
         enabled: REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== ""
       }
     },
-    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 3:30 AM IST daily."
+    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 4:00 AM IST daily."
   });
 });
 
@@ -346,12 +346,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// Cron job: Track all profiles daily at 3:30 AM IST every night
+// Cron job: Track all profiles daily at 4:00 AM IST every night
 // Uses queue system to handle rate limiting
 // NOTE: Timezone is set to IST (Asia/Kolkata) = UTC+5:30
 const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
   const now = new Date();
-  console.log(`\n⏰ [CRON] Daily tracking job started at 3:30 AM IST...`);
+  console.log(`\n⏰ [CRON] Daily tracking job started at 4:00 AM IST...`);
   console.log(`📅 [CRON] Current time: ${now.toISOString()} (UTC)`);
   console.log(`📅 [CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
   console.log(`🌍 [CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
@@ -586,13 +586,13 @@ if (command === "serve") {
       `📋 Queue status: http://${host}:${port}/queue/status`,
       `📋 API docs: http://${host}:${port}/`,
       `\n⏰ Cron jobs scheduled:`,
-      `   - Daily tracking: ${DAILY_CRON_SCHEDULE} (3:30 AM IST every night)`,
+      `   - Daily tracking: ${DAILY_CRON_SCHEDULE} (4:00 AM IST every night)`,
     ];
     
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       logs.push(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
     } else {
-      logs.push(`   - Periodic refresh: DISABLED (only daily at 3:30 AM IST will run)`);
+      logs.push(`   - Periodic refresh: DISABLED (only daily at 4:00 AM IST will run)`);
     }
     
     // Show next execution times

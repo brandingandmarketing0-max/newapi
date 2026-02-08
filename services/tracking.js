@@ -549,7 +549,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     }
 
     // Rate limiting delay between GraphQL requests
-    const RATE_LIMIT_DELAY = 2000; // 2 seconds
+    const RATE_LIMIT_DELAY = 10000; // 10 seconds
 
     // STEP 4: Fetch data for new reels first
     const newReelsWithData = [];
@@ -584,19 +584,27 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       }
     }
 
-    // STEP 5: Fetch data for existing reels (latest 12) to refresh metrics
-    console.log(`\n🔄 [${username}] Step 5: Refreshing data for existing reels (latest 12)...`);
+    // STEP 5: Fetch data for existing reels (latest 30) to refresh metrics
+    console.log(`\n🔄 [${username}] Step 5: Refreshing data for latest 30 existing reels...`);
     
-    // Get the latest 12 shortcodes from database (by timestamp)
-    const { data: latest12ReelsInDb } = await supabase
+    // Get latest 30 shortcodes from database (capped at 30 for performance)
+    const { data: allReelsInDb } = await supabase
       .from("ig_profile_reels")
       .select("shortcode")
       .eq("profile_id", profile.id)
       .order("taken_at", { ascending: false })
-      .limit(12);
+      .limit(30);
     
-    const existingShortcodesToRefresh = (latest12ReelsInDb || []).map(r => r.shortcode);
-    console.log(`📋 [${username}] Refreshing ${existingShortcodesToRefresh.length} existing reel(s)...`);
+    // Filter out new reels (they're already being fetched in Step 4, no need to duplicate)
+    const existingShortcodesToRefresh = (allReelsInDb || [])
+      .map(r => r.shortcode)
+      .filter(sc => !newShortcodes.includes(sc)); // Skip new reels - they're already being processed
+    
+    console.log(`📋 [${username}] Found ${allReelsInDb?.length || 0} latest reels in database (capped at 30)`);
+    console.log(`📋 [${username}] Refreshing ${existingShortcodesToRefresh.length} existing reel(s) (excluding ${newShortcodes.length} new reels already being processed)...`);
+    if (existingShortcodesToRefresh.length > 0) {
+      console.log(`   ⏱️  Estimated time: ~${Math.ceil((existingShortcodesToRefresh.length * RATE_LIMIT_DELAY) / 1000 / 60)} minutes (with rate limiting)`);
+    }
     
     const refreshedReelsWithData = [];
     for (let i = 0; i < existingShortcodesToRefresh.length; i++) {
@@ -625,53 +633,73 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       }
     }
 
-    // Combine new and refreshed reels, sort by date (newest first)
-    const allReelsWithData = [...newReelsWithData, ...refreshedReelsWithData];
-    allReelsWithData.sort((a, b) => {
-      const dateA = a.taken_at_timestamp || 0;
-      const dateB = b.taken_at_timestamp || 0;
-      return dateB - dateA; // Newest first
+    // FIXED: Process ALL new reels first (regardless of date), then refresh latest 30 existing reels
+    // This ensures new reels are always saved, and latest 30 existing reels get their metrics updated
+    
+    // Step 6a: Process ALL new reels first (these must always be saved)
+    const reelsToProcess = [];
+    const reelsDataMap = new Map();
+    
+    // Add ALL new reels to processing list (these are always saved)
+    newReelsWithData.forEach(reel => {
+      reelsToProcess.push(reel.shortcode);
+      reelsDataMap.set(reel.shortcode, reel);
     });
     
-    // Take ONLY the latest 12 reels total (new + refreshed)
-    const latest12Reels = allReelsWithData.slice(0, 12);
-    const shortcodesToProcess = latest12Reels.map(r => r.shortcode);
-    const reelsDataMap = new Map(latest12Reels.map(r => [r.shortcode, r]));
+    // Step 6b: Add latest 30 existing reels for refresh (avoid duplicates with new reels)
+    // Capped at 30 for performance - only refresh latest 30 existing reels
+    const existingReelsToProcess = refreshedReelsWithData
+      .filter(reel => !newShortcodes.includes(reel.shortcode)); // Don't duplicate new reels
+    
+    existingReelsToProcess.forEach(reel => {
+      if (!reelsToProcess.includes(reel.shortcode)) {
+        reelsToProcess.push(reel.shortcode);
+        reelsDataMap.set(reel.shortcode, reel);
+      }
+    });
     
     // Get today's date for comparison
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    console.log(`\n✅ [${username}] Step 6: Processing latest 12 reels (${newShortcodes.length} new + ${refreshedReelsWithData.length} refreshed):`);
+    console.log(`\n✅ [${username}] Step 6: Processing reels:`);
+    console.log(`   🆕 New reels to save: ${newReelsWithData.length} (ALL will be saved)`);
+    console.log(`   🔄 Existing reels to refresh: ${existingReelsToProcess.length} (latest 30)`);
+    console.log(`   📊 Total reels to process: ${reelsToProcess.length}`);
+    
     let todayReelsCount = 0;
-    latest12Reels.forEach((reel, idx) => {
+    reelsToProcess.forEach((shortcode, idx) => {
+      const reel = reelsDataMap.get(shortcode);
+      if (!reel) return;
+      
       const reelDate = reel.taken_at_timestamp ? new Date(reel.taken_at_timestamp * 1000) : null;
       const isToday = reelDate ? (reelDate.setHours(0, 0, 0, 0) === today.getTime()) : false;
       if (isToday) todayReelsCount++;
       
       const dateStr = reel.posted_date_readable || 'N/A';
-      const isNew = newShortcodes.includes(reel.shortcode);
+      const isNew = newShortcodes.includes(shortcode);
       const todayMarker = isToday ? ' 📅 TODAY' : '';
       const newMarker = isNew ? ' 🆕 NEW' : '';
-      console.log(`   ${idx + 1}. ${reel.shortcode} - Posted: ${dateStr}${todayMarker}${newMarker}`);
+      const refreshMarker = !isNew ? ' 🔄 REFRESH' : '';
+      console.log(`   ${idx + 1}. ${shortcode} - Posted: ${dateStr}${todayMarker}${newMarker}${refreshMarker}`);
     });
     
     console.log(`\n📊 [${username}] Summary:`);
-    console.log(`   🆕 New reels found: ${newShortcodes.length}`);
-    console.log(`   🔄 Existing reels refreshed: ${refreshedReelsWithData.length}`);
-    console.log(`   📅 Total latest 12 reels: ${latest12Reels.length}`);
+    console.log(`   🆕 New reels found: ${newShortcodes.length} (ALL will be saved)`);
+    console.log(`   🔄 Existing reels refreshed: ${existingReelsToProcess.length} (latest 30)`);
+    console.log(`   📅 Total reels to process: ${reelsToProcess.length}`);
     console.log(`   📅 Reels from today: ${todayReelsCount}`);
-    console.log(`   📅 Reels from previous days: ${latest12Reels.length - todayReelsCount}`);
-    console.log(`\n📊 [${username}] Processing and calculating deltas for these 12 reels...`);
+    console.log(`   📅 Reels from previous days: ${reelsToProcess.length - todayReelsCount}`);
+    console.log(`\n📊 [${username}] Processing and calculating deltas for ${reelsToProcess.length} reel(s)...`);
 
     // Accumulate daily reel growth totals
     let totalDailyViewsGrowth = 0;
     let totalDailyLikesGrowth = 0;
     let totalDailyCommentsGrowth = 0;
 
-    // Upsert reels and track metrics (ONLY the latest 12 reels)
-    for (let i = 0; i < shortcodesToProcess.length; i++) {
-      const shortcode = shortcodesToProcess[i];
+    // Upsert reels and track metrics (ALL new reels + latest 12 existing reels)
+    for (let i = 0; i < reelsToProcess.length; i++) {
+      const shortcode = reelsToProcess[i];
       const reelData = reelsDataMap.get(shortcode);
       
       if (!reelData) {
@@ -684,7 +712,7 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       const likeCount = (reelData.like_count !== null && reelData.like_count !== undefined) ? reelData.like_count : null;
       const commentCount = (reelData.comment_count !== null && reelData.comment_count !== undefined) ? reelData.comment_count : null;
       
-      console.log(`\n🔍 [${username}] [${i + 1}/12] Processing reel: ${shortcode}`);
+      console.log(`\n🔍 [${username}] [${i + 1}/${reelsToProcess.length}] Processing reel: ${shortcode}`);
       console.log(`   📅 Posted: ${reelData.posted_date_readable || 'N/A'}`);
       console.log(`   👁️  Views: ${viewCount !== null ? viewCount.toLocaleString() : 'N/A'}`);
       console.log(`   ❤️  Likes: ${likeCount !== null ? likeCount.toLocaleString() : 'N/A'}`);
@@ -861,11 +889,12 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
       }
     }
 
-    // Summary: Only processed latest 12 reels
-    console.log(`\n✅ [${username}] Completed processing latest 12 reels (sorted by date, newest first)`);
-    console.log(`   📊 Total reels found: ${uniqueShortcodes.length}`);
-    console.log(`   📊 Processed: ${shortcodesToProcess.length} (latest 12 only)`);
-    console.log(`   📊 Skipped: ${uniqueShortcodes.length - shortcodesToProcess.length} older reels`);
+    // Summary: Processed ALL new reels + latest 30 existing reels
+    console.log(`\n✅ [${username}] Completed processing reels`);
+    console.log(`   📊 Total reels found via scraping: ${uniqueShortcodes.length}`);
+    console.log(`   🆕 New reels processed: ${newReelsWithData.length} (ALL saved)`);
+    console.log(`   🔄 Existing reels refreshed: ${existingReelsToProcess.length} (latest 30)`);
+    console.log(`   📊 Total processed: ${reelsToProcess.length}`);
 
     // Prune old reels > 12 (keep only last 12)
     // NOTE: We no longer delete older reels from the database.
