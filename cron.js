@@ -11,9 +11,8 @@
  * 
  * Usage in Railway:
  * 1. Add a new "Cron" service in Railway
- * 2. Set the schedule: "0 19 * * *" (8:00 PM UK time / 19:00 UTC daily)
- *    Note: 19:00 UTC = 8 PM BST (summer) / 7 PM GMT (winter)
- *    For consistent 8 PM UK time year-round, use 20:00 UTC (8 PM GMT / 9 PM BST)
+ * 2. Set the schedule: "30 22 * * *" (4:30 AM IST / 22:30 UTC daily)
+ *    Note: IST is UTC+5:30, so 4:30 AM IST = 22:30 UTC (10:30 PM UTC previous day)
  * 3. Set the command: "node cron.js"
  * 4. Share environment variables with main service
  */

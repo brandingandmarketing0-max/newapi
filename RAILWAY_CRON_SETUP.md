@@ -21,9 +21,8 @@ Railway supports **native cron jobs** that run independently of your main servic
 2. **Configure the Cron Service:**
    - **Root Directory**: `src-backup-railway`
    - **Command**: `node cron.js`
-   - **Schedule**: `0 19 * * *` (daily at 8:00 PM UK time / 19:00 UTC)
-     - Note: 19:00 UTC = 8 PM BST (summer) / 7 PM GMT (winter)
-     - For consistent 8 PM UK time: use `0 20 * * *` (8 PM GMT / 9 PM BST)
+   - **Schedule**: `30 22 * * *` (daily at 4:30 AM IST / 22:30 UTC)
+     - Note: IST is UTC+5:30, so 4:30 AM IST = 22:30 UTC (10:30 PM UTC previous day)
    - **Environment Variables**: Share variables from your main service
 
 3. **Add Environment Variable:**
@@ -45,9 +44,8 @@ Railway supports **native cron jobs** that run independently of your main servic
 Create **two separate cron services** for different schedules:
 
 #### Daily Cron Service:
-- **Schedule**: `0 19 * * *` (8:00 PM UK time / 19:00 UTC daily)
-  - 19:00 UTC = 8 PM BST (summer) / 7 PM GMT (winter)
-  - For consistent 8 PM UK time: use `0 20 * * *` (8 PM GMT / 9 PM BST)
+- **Schedule**: `30 22 * * *` (4:30 AM IST / 22:30 UTC daily)
+  - IST is UTC+5:30, so 4:30 AM IST = 22:30 UTC (10:30 PM UTC previous day)
 - **Command**: `node cron.js`
 - **Environment**: `CRON_TYPE=daily`
 
@@ -60,8 +58,7 @@ Create **two separate cron services** for different schedules:
 
 | Schedule | Description | Example |
 |----------|-------------|---------|
-| `0 19 * * *` | Daily at 8 PM UK (BST) | Every day at 8 PM UK time (19:00 UTC) |
-| `0 20 * * *` | Daily at 8 PM UK (GMT) | Every day at 8 PM UK time (20:00 UTC) |
+| `30 22 * * *` | Daily at 4:30 AM IST | Every day at 4:30 AM IST (22:30 UTC) |
 | `0 0 * * *` | Daily at midnight UTC | Every day at 00:00 UTC |
 | `0 2 * * *` | Daily at 2 AM UTC | Every day at 02:00 UTC |
 | `0 */6 * * *` | Every 6 hours | 00:00, 06:00, 12:00, 18:00 UTC |
