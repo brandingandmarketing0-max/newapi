@@ -11,8 +11,8 @@
  * 
  * Usage in Railway:
  * 1. Add a new "Cron" service in Railway
- * 2. Set the schedule: "30 22 * * *" (4:30 AM IST / 22:30 UTC daily)
- *    Note: IST is UTC+5:30, so 4:30 AM IST = 22:30 UTC (10:30 PM UTC previous day)
+ * 2. Set the schedule: "15 23 * * *" (4:45 AM IST / 23:15 UTC daily)
+ *    Note: IST is UTC+5:30, so 4:45 AM IST = 23:15 UTC (11:15 PM UTC previous day)
  * 3. Set the command: "node cron.js"
  * 4. Share environment variables with main service
  */
