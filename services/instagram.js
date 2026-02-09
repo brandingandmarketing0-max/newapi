@@ -140,8 +140,9 @@ const fetchInstagramProfileData = async (username, retries = 3) => {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       // Add delay between requests to avoid rate limiting
+      let delayMs = RATE_LIMIT_RETRY_DELAY; // Default delay for first attempt
       if (attempt > 0) {
-        const delayMs = 60000 * attempt; // Wait 1min, 2min, 3min for rate limits
+        delayMs = 60000 * attempt; // Wait 1min, 2min, 3min for rate limits
         console.log(`Rate limited, waiting ${delayMs/1000}s before retry ${attempt + 1}/${retries}...`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
