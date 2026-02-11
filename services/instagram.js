@@ -1,5 +1,6 @@
 
 const { chromium } = require("playwright");
+const cookieManager = require("./cookie-manager");
 
 const {
   USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -12,12 +13,6 @@ const {
   IG_USER_MEDIA_QUERY_HASH = "69cba40317214236af40e7efa697781d", // For user media pagination
   IG_USER_CLIPS_QUERY_HASH = "bc78b344a68ed16dd5d7f264681c2fd8" // For clips pagination
 } = process.env;
-
-// Instagram cookies for Playwright scraping - MUST be set in .env file
-// Format: "mid=xxx; sessionid=xxx; ig_did=xxx; csrftoken=xxx; datr=xxx; ig_nrcb=xxx"
-// IMPORTANT: You MUST include 'sessionid' cookie for authentication!
-// Get cookies from: Chrome DevTools > Application > Cookies > instagram.com
-const INSTAGRAM_COOKIES = process.env.INSTAGRAM_COOKIES || "";
 
 // Helper function to validate cookies
 const validateCookies = (cookieString) => {
@@ -125,123 +120,195 @@ const fetchInstagramProfileData = async (username, retries = 3) => {
   const url = new URL(IG_WEB_PROFILE_ENDPOINT);
   url.searchParams.set("username", username);
 
-  const headers = {
-    "User-Agent": USER_AGENT,
-    "X-IG-App-ID": X_IG_APP_ID,
-    "X-FB-LSD": IG_LSD,
-    "X-ASBD-ID": IG_ASBD_ID,
-    "Sec-Fetch-Site": "same-origin",
-    Referer: "https://www.instagram.com/"
-  };
-
   let response;
   let json;
+  let maxCookieAttempts = cookieManager.getAllCookies().length || 1;
   
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      // Add delay between requests to avoid rate limiting
-      let delayMs = RATE_LIMIT_RETRY_DELAY; // Default delay for first attempt
-      if (attempt > 0) {
-        delayMs = 60000 * attempt; // Wait 1min, 2min, 3min for rate limits
-        console.log(`Rate limited, waiting ${delayMs/1000}s before retry ${attempt + 1}/${retries}...`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
+  // Try with cookie rotation
+  for (let cookieAttempt = 0; cookieAttempt < maxCookieAttempts; cookieAttempt++) {
+    const headers = {
+      "User-Agent": USER_AGENT,
+      "X-IG-App-ID": X_IG_APP_ID,
+      "X-FB-LSD": IG_LSD,
+      "X-ASBD-ID": IG_ASBD_ID,
+      "Sec-Fetch-Site": "same-origin",
+      Referer: "https://www.instagram.com/"
+    };
 
-      response = await fetch(url, { headers });
-      
-      // Handle rate limiting (429 Too Many Requests)
-      if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : delayMs;
-        console.warn(`🚫 [Instagram] Rate limit (429) for ${username}. Retry-After: ${retryAfter || 'not specified'}s`);
-        if (attempt < retries - 1) {
-          console.warn(`⏳ [Instagram] Waiting ${waitTime/1000}s before retry ${attempt + 2}/${retries}...`);
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          continue;
+    // Add cookies to headers if available (for API requests, cookies go in Cookie header)
+    const currentCookie = cookieManager.getCurrentCookie();
+    if (currentCookie) {
+      headers["Cookie"] = currentCookie;
+      console.log(`🍪 [Instagram] Using cookie ${cookieManager.getStatus().currentCookie} for ${username}`);
+    }
+    
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        // Add delay between requests to avoid rate limiting
+        let delayMs = RATE_LIMIT_RETRY_DELAY; // Default delay for first attempt
+        if (attempt > 0) {
+          delayMs = 60000 * attempt; // Wait 1min, 2min, 3min for rate limits
+          console.log(`Rate limited, waiting ${delayMs/1000}s before retry ${attempt + 1}/${retries}...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
         }
-        throw new Error(`Instagram rate limit (429): Too many requests. Please wait before trying again.`);
-      }
-      
-      // Handle 401 (authentication/rate limit related)
-      if (response.status === 401) {
-        const errorData = await response.json().catch(() => ({}));
-        if (errorData.message?.includes("wait a few minutes") || errorData.require_login) {
+
+        response = await fetch(url, { headers });
+        
+        // Handle rate limiting (429 Too Many Requests) - switch cookie
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('Retry-After');
+          const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : delayMs;
+          console.warn(`🚫 [Instagram] Rate limit (429) for ${username} with cookie ${cookieManager.getStatus().currentCookie}. Retry-After: ${retryAfter || 'not specified'}s`);
+          
+          // Mark cookie as failed and switch
+          const switchDelay = cookieManager.markCookieFailed('rate_limit_429');
+          if (switchDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, switchDelay));
+          }
+          
+          // If we have more cookies, break inner loop and try next cookie
+          if (cookieAttempt < maxCookieAttempts - 1) {
+            console.log(`🔄 [Instagram] Switching to next cookie and retrying...`);
+            break; // Break inner retry loop, continue outer cookie loop
+          }
+          
+          // Last cookie attempt - throw error
           if (attempt < retries - 1) {
-            console.warn(`⚠️  [Instagram] Rate limited by Instagram for ${username}. Will retry after delay...`);
+            console.warn(`⏳ [Instagram] Waiting ${waitTime/1000}s before retry ${attempt + 2}/${retries}...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;
           }
-          throw new Error(`Instagram rate limit: ${errorData.message || 'Please wait a few minutes before trying again'}`);
+          throw new Error(`Instagram rate limit (429): Too many requests. Please wait before trying again.`);
         }
-      }
+        
+        // Handle 401 (authentication/rate limit related) - switch cookie
+        if (response.status === 401) {
+          const errorData = await response.json().catch(() => ({}));
+          if (errorData.message?.includes("wait a few minutes") || errorData.require_login) {
+            console.warn(`🚫 [Instagram] Auth/rate limit (401) for ${username} with cookie ${cookieManager.getStatus().currentCookie}`);
+            
+            // Mark cookie as failed and switch
+            const switchDelay = cookieManager.markCookieFailed('auth_failed_401');
+            if (switchDelay > 0) {
+              await new Promise(resolve => setTimeout(resolve, switchDelay));
+            }
+            
+            // If we have more cookies, break inner loop and try next cookie
+            if (cookieAttempt < maxCookieAttempts - 1) {
+              console.log(`🔄 [Instagram] Switching to next cookie and retrying...`);
+              break; // Break inner retry loop, continue outer cookie loop
+            }
+            
+            if (attempt < retries - 1) {
+              console.warn(`⚠️  [Instagram] Rate limited by Instagram for ${username}. Will retry after delay...`);
+              continue;
+            }
+            throw new Error(`Instagram rate limit: ${errorData.message || 'Please wait a few minutes before trying again'}`);
+          }
+        }
 
-      if (!response.ok) {
-        const text = await response.text();
-        // Check if response indicates rate limiting
-        if (response.status === 403 || (text.includes('rate limit') || text.includes('too many'))) {
-          throw new Error(`Instagram rate limit: ${text.substring(0, 200)}`);
+        if (!response.ok) {
+          const text = await response.text();
+          // Check if response indicates rate limiting - switch cookie
+          if (response.status === 403 || (text.includes('rate limit') || text.includes('too many'))) {
+            console.warn(`🚫 [Instagram] Rate limit detected (${response.status}) for ${username} with cookie ${cookieManager.getStatus().currentCookie}`);
+            
+            // Mark cookie as failed and switch
+            const switchDelay = cookieManager.markCookieFailed('rate_limit_403');
+            if (switchDelay > 0) {
+              await new Promise(resolve => setTimeout(resolve, switchDelay));
+            }
+            
+            // If we have more cookies, break inner loop and try next cookie
+            if (cookieAttempt < maxCookieAttempts - 1) {
+              console.log(`🔄 [Instagram] Switching to next cookie and retrying...`);
+              break; // Break inner retry loop, continue outer cookie loop
+            }
+            
+            throw new Error(`Instagram rate limit: ${text.substring(0, 200)}`);
+          }
+          throw new Error(`Instagram profile lookup failed with ${response.status}: ${text.substring(0, 200)}`);
         }
-        throw new Error(`Instagram profile lookup failed with ${response.status}: ${text.substring(0, 200)}`);
+        
+        // Success - mark cookie as working and parse response
+        cookieManager.markCookieSuccess();
+        json = await response.json();
+        
+        // Process the response
+        const user = json?.data?.user;
+        if (!user) {
+          throw new Error("Unable to locate user profile data in response.");
+        }
+
+        // Get initial data - just use what Instagram gives us, no pagination
+        const initialData = formatProfileResponse(user);
+        
+        // Combine clips and recent_media, deduplicate, sort by date, take last 12 total
+        const allMedia = [...(initialData.clips || []), ...(initialData.recent_media || [])];
+        
+        // Deduplicate by shortcode
+        const uniqueMedia = Array.from(
+          new Map(allMedia.map(m => [m.shortcode, m])).values()
+        );
+        
+        // Sort by taken_at_timestamp (newest first)
+        uniqueMedia.sort((a, b) => (b.taken_at_timestamp || 0) - (a.taken_at_timestamp || 0));
+        
+        // Take only the last 12 items total
+        const last12 = uniqueMedia.slice(0, 12);
+        
+        // Separate back into clips and recent_media for compatibility
+        const clips = last12.filter(m => m.is_video && initialData.clips?.some(c => c.shortcode === m.shortcode));
+        const recent_media = last12.filter(m => !clips.some(c => c.shortcode === m.shortcode));
+        
+        console.log(`Fetched ${last12.length} total items (${clips.length} clips, ${recent_media.length} posts)`);
+
+        return {
+          ...initialData,
+          recent_media: recent_media,
+          clips: clips
+        };
+      } catch (err) {
+        // Check if it's a rate limit error that we should retry with different cookie
+        if (err.message?.includes('rate limit') || err.message?.includes('429') || err.message?.includes('401')) {
+          if (cookieAttempt < maxCookieAttempts - 1 && attempt === retries - 1) {
+            // Last retry attempt failed, but we have more cookies - switch and try again
+            const switchDelay = cookieManager.markCookieFailed('rate_limit_error');
+            if (switchDelay > 0) {
+              await new Promise(resolve => setTimeout(resolve, switchDelay));
+            }
+            break; // Break inner retry loop, continue outer cookie loop
+          }
+        }
+        
+        if (attempt === retries - 1 && cookieAttempt === maxCookieAttempts - 1) {
+          // Last attempt with last cookie - throw error
+          throw err;
+        }
+        // Continue to retry
       }
-      
-      // Success - parse JSON and break out of retry loop
-      json = await response.json();
-      break;
-    } catch (err) {
-      if (attempt === retries - 1) {
-        throw err;
-      }
-      // Continue to retry
     }
   }
 
-  if (!json) {
-    throw new Error('Failed to fetch Instagram profile data after retries');
-  }
-  const user = json?.data?.user;
-  if (!user) {
-    throw new Error("Unable to locate user profile data in response.");
-  }
-
-  // Get initial data - just use what Instagram gives us, no pagination
-  const initialData = formatProfileResponse(user);
-  
-  // Combine clips and recent_media, deduplicate, sort by date, take last 12 total
-  const allMedia = [...(initialData.clips || []), ...(initialData.recent_media || [])];
-  
-  // Deduplicate by shortcode
-  const uniqueMedia = Array.from(
-    new Map(allMedia.map(m => [m.shortcode, m])).values()
-  );
-  
-  // Sort by taken_at_timestamp (newest first)
-  uniqueMedia.sort((a, b) => (b.taken_at_timestamp || 0) - (a.taken_at_timestamp || 0));
-  
-  // Take only the last 12 items total
-  const last12 = uniqueMedia.slice(0, 12);
-  
-  // Separate back into clips and recent_media for compatibility
-  const clips = last12.filter(m => m.is_video && initialData.clips?.some(c => c.shortcode === m.shortcode));
-  const recent_media = last12.filter(m => !clips.some(c => c.shortcode === m.shortcode));
-  
-  console.log(`Fetched ${last12.length} total items (${clips.length} clips, ${recent_media.length} posts)`);
-
-  return {
-    ...initialData,
-    recent_media: recent_media,
-    clips: clips
-  };
+  // If we get here, all cookies failed
+  throw new Error('Failed to fetch Instagram profile data after trying all cookies');
 };
 
 // Function to scrape reels page using Playwright (headless) - extracts reel shortcodes
 // Follows exact flow: instagram.com -> set cookies -> username/reels -> extract shortcodes
+// Supports cookie rotation - will try all available cookies if one fails
 const scrapeReelsPageWithPlaywright = async (username) => {
   const url = `https://www.instagram.com/${username}/reels/`;
   console.log(`\n🔍 [Playwright] Scraping reels page: ${url}`);
   
-  let browser;
-  let page;
+  const maxCookieAttempts = cookieManager.getAllCookies().length || 1;
   
-  try {
+  // Try with cookie rotation
+  for (let cookieAttempt = 0; cookieAttempt < maxCookieAttempts; cookieAttempt++) {
+    let browser;
+    let page;
+    
+    try {
     // Launch browser (headless by default, can be overridden with env var)
     const headlessMode = process.env.HEADLESS !== 'false';
     console.log(`🚀 [Playwright] Launching browser (${headlessMode ? 'headless' : 'visible'})...`);
@@ -333,12 +400,13 @@ const scrapeReelsPageWithPlaywright = async (username) => {
     const currentUrl = page.url();
     console.log(`   [Playwright] Current URL after navigation: ${currentUrl}`);
     
-    // STEP 2: Set cookies (from env var)
-    if (INSTAGRAM_COOKIES && INSTAGRAM_COOKIES.trim() !== '') {
-      console.log(`🍪 [Playwright] Step 2: Setting cookies...`);
+    // STEP 2: Set cookies (from cookie manager with rotation support)
+    const currentCookie = cookieManager.getCurrentCookie();
+    if (currentCookie && currentCookie.trim() !== '') {
+      console.log(`🍪 [Playwright] Step 2: Setting cookies (cookie ${cookieManager.getStatus().currentCookie}/${cookieManager.getAllCookies().length})...`);
       
       // Validate cookies before using them
-      const validation = validateCookies(INSTAGRAM_COOKIES);
+      const validation = validateCookies(currentCookie);
       if (!validation.valid) {
         console.log(`   ❌ [Playwright] ${validation.message}`);
         console.log(`   ⚠️  [Playwright] Without 'sessionid', Instagram will redirect to login.`);
@@ -354,6 +422,7 @@ const scrapeReelsPageWithPlaywright = async (username) => {
         console.log(`      - ig_did`);
         console.log(`   5. Format: 'name1=value1; name2=value2; ...'`);
         console.log(`   6. Add to .env: INSTAGRAM_COOKIES='your_cookies_here'`);
+        console.log(`   7. For backup cookies: INSTAGRAM_COOKIES_2='backup_cookies', INSTAGRAM_COOKIES_3='backup_cookies', etc.`);
       } else if (validation.recommended.length > 0) {
         console.log(`   ⚠️  [Playwright] ${validation.message}`);
       } else {
@@ -361,7 +430,7 @@ const scrapeReelsPageWithPlaywright = async (username) => {
       }
       
       try {
-        const cookieArray = INSTAGRAM_COOKIES.split('; ').map(cookie => {
+        const cookieArray = currentCookie.split('; ').map(cookie => {
           const [name, ...valueParts] = cookie.split('=');
           const value = valueParts.join('=');
           const cookieObj = {
@@ -431,37 +500,30 @@ const scrapeReelsPageWithPlaywright = async (username) => {
     console.log(`      URL: ${finalUrl}`);
     console.log(`      Title: ${pageTitle}`);
     
-    // Check if we're on a login page
+      // Check if we're on a login page - mark cookie as failed and try next
     if (finalUrl.includes('accounts/login') || pageTitle.toLowerCase().includes('login')) {
-      console.log(`\n⚠️  [Playwright] Instagram redirected to login page!`);
-      console.log(`   [Playwright] This usually means:`);
-      console.log(`   1. Cookies are expired or invalid`);
-      console.log(`   2. Missing 'sessionid' cookie (most critical)`);
-      console.log(`   3. Instagram detected automation`);
-      console.log(`\n   💡 [Playwright] SOLUTION:`);
-      console.log(`   1. Open Instagram in Chrome (logged in)`);
-      console.log(`   2. Open DevTools (F12) > Application > Cookies > instagram.com`);
-      console.log(`   3. Copy ALL cookies, especially 'sessionid'`);
-      console.log(`   4. Update INSTAGRAM_COOKIES in .env file`);
-      console.log(`   5. Format: 'mid=xxx; sessionid=xxx; csrftoken=xxx; datr=xxx; ...'`);
+      console.log(`\n⚠️  [Playwright] Instagram redirected to login page with cookie ${cookieManager.getStatus().currentCookie}!`);
       
-      // Try to continue anyway - sometimes the page still loads content
-      console.log(`\n   🔄 [Playwright] Attempting to continue anyway (sometimes content loads despite redirect)...`);
-      await page.waitForTimeout(5000);
-      
-      // Check again after waiting
-      const retryUrl = page.url();
-      const retryTitle = await page.title();
-      
-      if (retryUrl.includes('accounts/login') || retryTitle.toLowerCase().includes('login')) {
-        await browser.close();
-        return {
-          error: "Login required",
-          shortcodes: []
-        };
-      } else {
-        console.log(`   ✅ [Playwright] Page loaded successfully after retry!`);
+      // Mark cookie as failed
+      const switchDelay = cookieManager.markCookieFailed('login_redirect');
+      if (switchDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, switchDelay));
       }
+      
+      // Close browser and try next cookie
+      await browser.close();
+      
+      // If we have more cookies, try next one
+      if (cookieAttempt < maxCookieAttempts - 1) {
+        console.log(`🔄 [Playwright] Switching to next cookie and retrying...`);
+        continue; // Try next cookie
+      }
+      
+      // Last cookie failed - return error
+      return {
+        error: "Login required - all cookies failed",
+        shortcodes: []
+      };
     }
 
     // Wait for content to appear - look for reel links
@@ -602,23 +664,60 @@ const scrapeReelsPageWithPlaywright = async (username) => {
       // Ignore errors
     }
 
-    await browser.close();
-    
-    const shortcodesArray = Array.from(reelShortcodes);
-    console.log(`✅ [Playwright] Found ${shortcodesArray.length} unique reel shortcodes`);
-
-    return {
-      shortcodes: shortcodesArray,
-      count: shortcodesArray.length
-    };
-
-  } catch (error) {
-    if (browser) {
+      // Success - mark cookie as working
+      cookieManager.markCookieSuccess();
+      
       await browser.close();
+      
+      const shortcodesArray = Array.from(reelShortcodes);
+      console.log(`✅ [Playwright] Found ${shortcodesArray.length} unique reel shortcodes`);
+
+      return {
+        shortcodes: shortcodesArray,
+        count: shortcodesArray.length
+      };
+    } catch (error) {
+      // Check if it's a rate limit or auth error - try next cookie
+      const isRateLimitError = error.message?.includes('rate limit') || 
+                               error.message?.includes('429') || 
+                               error.message?.includes('401') ||
+                               error.message?.includes('403') ||
+                               error.message?.includes('Login required');
+      
+      if (isRateLimitError && cookieAttempt < maxCookieAttempts - 1) {
+        console.warn(`🚫 [Playwright] Error with cookie ${cookieManager.getStatus().currentCookie}: ${error.message}`);
+        
+        // Mark cookie as failed
+        const switchDelay = cookieManager.markCookieFailed('playwright_error');
+        if (switchDelay > 0) {
+          await new Promise(resolve => setTimeout(resolve, switchDelay));
+        }
+        
+        // Close browser and try next cookie
+        if (browser) {
+          await browser.close();
+        }
+        
+        console.log(`🔄 [Playwright] Switching to next cookie and retrying...`);
+        continue; // Try next cookie
+      }
+      
+      // Last cookie or non-rate-limit error - throw
+      if (browser) {
+        await browser.close();
+      }
+      console.error(`❌ [Playwright] Error scraping page:`, error.message);
+      
+      // If last cookie attempt, throw error
+      if (cookieAttempt === maxCookieAttempts - 1) {
+        throw error;
+      }
+      // Otherwise continue to next cookie
     }
-    console.error(`❌ [Playwright] Error scraping page:`, error.message);
-    throw error;
   }
+  
+  // If we get here, all cookies failed
+  throw new Error('Failed to scrape reels page after trying all cookies');
 };
 
 

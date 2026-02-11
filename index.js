@@ -27,7 +27,6 @@ const cron = require("node-cron");
 const supabase = require("./services/supabase");
 const { trackProfile } = require("./services/tracking");
 const { addJob, processQueue, getQueueStatus } = require("./services/queue");
-const { trackAllTwitterAnalytics } = require("./services/twitter-analytics");
 const { updateDailyMetricsForAllProfiles } = require("./services/daily-metrics");
 const profilesRouter = require("./routes/profiles");
 const reelsRouter = require("./routes/reels");
@@ -37,9 +36,9 @@ const twitterRouter = require("./routes/twitter");
 const MIN_TIME_BETWEEN_JOBS = parseInt(process.env.MIN_TIME_BETWEEN_JOBS_MS || "300000", 10); // 5 minutes default (configurable)
 
 // Configurable cron schedules
-// Daily cron: Runs at 4:00 AM IST every night - "0 4 * * *" (when TZ=Asia/Kolkata)
+// Daily cron: Runs at 6:30 AM IST every morning - "30 6 * * *" (when TZ=Asia/Kolkata)
 // Refresh cron: Optional periodic refresh (default: every 12 hours)
-const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "0 4 * * *"; // 4:00 AM IST daily
+const DAILY_CRON_SCHEDULE = process.env.DAILY_CRON_SCHEDULE || "30 6 * * *"; // 6:30 AM IST daily
 const REFRESH_CRON_SCHEDULE = process.env.REFRESH_CRON_SCHEDULE || "0 */12 * * *"; // Every 12 hours (optional - can disable by setting to empty)
 
 // Timezone: Set to IST (Indian Standard Time) by default
@@ -317,7 +316,7 @@ app.get("/cron/schedule", (req, res) => {
     schedules: {
       daily: {
         cron: DAILY_CRON_SCHEDULE,
-        description: "Daily refresh at 4:00 AM IST",
+        description: "Daily refresh at 6:30 AM IST",
         nextExecution: formatDateWithTimezone(nextDaily),
         nextExecutionIST: nextDaily ? new Date(nextDaily).toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" }) : null,
         enabled: true
@@ -329,7 +328,7 @@ app.get("/cron/schedule", (req, res) => {
         enabled: REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== ""
       }
     },
-    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 4:00 AM IST daily."
+    note: "Timezone is set to IST (Asia/Kolkata = UTC+5:30). Cron runs at 6:30 AM IST daily."
   });
 });
 
@@ -346,12 +345,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// Cron job: Track all profiles daily at 4:00 AM IST every night
+// Cron job: Track all profiles daily at 6:30 AM IST every morning
 // Uses queue system to handle rate limiting
 // NOTE: Timezone is set to IST (Asia/Kolkata) = UTC+5:30
 const dailyCronTask = cron.schedule(DAILY_CRON_SCHEDULE, async () => {
   const now = new Date();
-  console.log(`\n⏰ [CRON] Daily tracking job started at 4:00 AM IST...`);
+  console.log(`\n⏰ [CRON] Daily tracking job started at 6:30 AM IST...`);
   console.log(`📅 [CRON] Current time: ${now.toISOString()} (UTC)`);
   console.log(`📅 [CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
   console.log(`🌍 [CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
@@ -522,40 +521,8 @@ if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
   console.log(`ℹ️  [CRON] Periodic refresh job disabled (REFRESH_CRON_SCHEDULE not set or empty)`);
 }
 
-// Twitter Analytics Cron Job: Track Twitter profiles and tweets daily
-// Runs at 3:00 AM IST (after Instagram cron) to avoid conflicts
-const TWITTER_CRON_SCHEDULE = process.env.TWITTER_CRON_SCHEDULE || "0 3 * * *"; // 3:00 AM IST daily
-
-const twitterCronTask = cron.schedule(TWITTER_CRON_SCHEDULE, async () => {
-  const now = new Date();
-  console.log(`\n⏰ [TWITTER CRON] Daily Twitter analytics tracking started at 3:00 AM IST...`);
-  console.log(`📅 [TWITTER CRON] Current time: ${now.toISOString()} (UTC)`);
-  console.log(`📅 [TWITTER CRON] Current time IST: ${now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}`);
-  console.log(`🌍 [TWITTER CRON] Timezone: ${TIMEZONE} (IST = UTC+5:30)`);
-  
-  try {
-    const result = await trackAllTwitterAnalytics();
-    
-    console.log(`\n✅ [TWITTER CRON] Twitter analytics tracking completed`);
-    console.log(`   - Processed: ${result.processed}/${result.total}`);
-    console.log(`   - Success: ${result.success}`);
-    console.log(`   - Errors: ${result.errors}`);
-    
-    // Log next execution time
-    const nextExecution = getNextCronExecution(TWITTER_CRON_SCHEDULE);
-    if (nextExecution) {
-      const nextTime = formatDateWithTimezone(nextExecution);
-      console.log(`📅 [TWITTER CRON] Next Twitter tracking: ${nextTime.utc} (${nextTime.relative})`);
-    }
-  } catch (err) {
-    console.error("❌ [TWITTER CRON] Fatal error in Twitter cron job:", err.message);
-  }
-}, {
-  scheduled: true,
-  timezone: TIMEZONE
-});
-
-console.log(`✅ [TWITTER CRON] Twitter analytics cron scheduled: ${TWITTER_CRON_SCHEDULE} (3:00 AM IST daily)`);
+// Note: Twitter cron jobs are handled by x-tracker-playwright service, not here
+// This service (newapi) only handles Instagram tracking
 
 // Handle command line arguments
 const args = process.argv.slice(2);
@@ -586,13 +553,13 @@ if (command === "serve") {
       `📋 Queue status: http://${host}:${port}/queue/status`,
       `📋 API docs: http://${host}:${port}/`,
       `\n⏰ Cron jobs scheduled:`,
-      `   - Daily tracking: ${DAILY_CRON_SCHEDULE} (4:00 AM IST every night)`,
+      `   - Daily tracking: ${DAILY_CRON_SCHEDULE} (6:30 AM IST every morning)`,
     ];
     
     if (REFRESH_CRON_SCHEDULE && REFRESH_CRON_SCHEDULE.trim() !== "") {
       logs.push(`   - Periodic refresh: ${REFRESH_CRON_SCHEDULE} (configurable via REFRESH_CRON_SCHEDULE env var)`);
     } else {
-      logs.push(`   - Periodic refresh: DISABLED (only daily at 4:00 AM IST will run)`);
+      logs.push(`   - Periodic refresh: DISABLED (only daily at 6:30 AM IST will run)`);
     }
     
     // Show next execution times
