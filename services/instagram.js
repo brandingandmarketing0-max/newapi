@@ -291,6 +291,13 @@ const fetchInstagramProfileData = async (username, retries = 3) => {
   }
 
   // If we get here, all cookies failed
+  // Check if all cookies were rate limited - if so, suggest waiting longer
+  if (cookieManager.areAllCookiesRateLimited()) {
+    const waitTime = cookieManager.getTimeUntilRetry();
+    const waitMinutes = Math.ceil(waitTime / 1000 / 60);
+    throw new Error(`All Instagram cookies are rate limited. Instagram is blocking requests from this IP/account. Please wait ${waitMinutes} minutes before trying again. Consider using cookies from different accounts or reducing request frequency.`);
+  }
+  
   throw new Error('Failed to fetch Instagram profile data after trying all cookies');
 };
 
@@ -717,192 +724,288 @@ const scrapeReelsPageWithPlaywright = async (username) => {
   }
   
   // If we get here, all cookies failed
+  // Check if all cookies were rate limited
+  if (cookieManager.areAllCookiesRateLimited()) {
+    const waitTime = cookieManager.getTimeUntilRetry();
+    const waitMinutes = Math.ceil(waitTime / 1000 / 60);
+    throw new Error(`All Instagram cookies are rate limited. Please wait ${waitMinutes} minutes before trying again.`);
+  }
+  
   throw new Error('Failed to scrape reels page after trying all cookies');
 };
 
 
 // Fetch individual reel/post data using GraphQL with rate limiting and retry logic
 // Uses the EXACT format from user's reference code
+// Supports cookie rotation - will try all available cookies if one fails
 const fetchReelData = async (shortcode, retryCount = 0) => {
   if (!shortcode) throw new Error("Shortcode is required.");
 
-  try {
-    // Use URL format EXACTLY as user specified in reference code (matching new/index.js)
-    const graphql = new URL(`https://www.instagram.com/api/graphql`);
-    graphql.searchParams.set("variables", JSON.stringify({ shortcode }));
-    graphql.searchParams.set("doc_id", IG_GRAPHQL_DOC_ID);
-    graphql.searchParams.set("lsd", IG_LSD);
+  const maxCookieAttempts = cookieManager.getAllCookies().length || 1;
+  
+  // Try with cookie rotation
+  for (let cookieAttempt = 0; cookieAttempt < maxCookieAttempts; cookieAttempt++) {
+    try {
+      // Use URL format EXACTLY as user specified in reference code (matching new/index.js)
+      const graphql = new URL(`https://www.instagram.com/api/graphql`);
+      graphql.searchParams.set("variables", JSON.stringify({ shortcode }));
+      graphql.searchParams.set("doc_id", IG_GRAPHQL_DOC_ID);
+      graphql.searchParams.set("lsd", IG_LSD);
 
-    const headers = {
-      "User-Agent": USER_AGENT,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "X-IG-App-ID": X_IG_APP_ID,
-      "X-FB-LSD": IG_LSD,
-      "X-ASBD-ID": IG_ASBD_ID,
-      "Sec-Fetch-Site": "same-origin"
-    };
+      const headers = {
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-IG-App-ID": X_IG_APP_ID,
+        "X-FB-LSD": IG_LSD,
+        "X-ASBD-ID": IG_ASBD_ID,
+        "Sec-Fetch-Site": "same-origin",
+        Referer: "https://www.instagram.com/"
+      };
 
-    // Use URL directly with searchParams (no body) - matching new/index.js exactly
-    const response = await fetch(graphql, {
-      method: "POST",
-      headers
-    });
+      // Add cookies to headers if available
+      const currentCookie = cookieManager.getCurrentCookie();
+      if (currentCookie) {
+        headers["Cookie"] = currentCookie;
+      }
 
-    // Handle rate limiting (429 Too Many Requests)
-    if (response.status === 429) {
-      if (retryCount < MAX_RETRIES) {
-        const waitTime = RATE_LIMIT_RETRY_DELAY * (retryCount + 1); // Exponential backoff
-        console.log(`   ⚠️  [GraphQL] Rate limited for ${shortcode}! Waiting ${waitTime / 1000}s before retry ${retryCount + 1}/${MAX_RETRIES}...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        return fetchReelData(shortcode, retryCount + 1);
+      // Use URL directly with searchParams (no body) - matching new/index.js exactly
+      const response = await fetch(graphql, {
+        method: "POST",
+        headers
+      });
+
+      // Handle rate limiting (429 Too Many Requests) - switch cookie
+      if (response.status === 429) {
+        console.warn(`🚫 [GraphQL] Rate limit (429) for ${shortcode} with cookie ${cookieManager.getStatus().currentCookie}`);
+        
+        // Mark cookie as failed and switch
+        const switchDelay = cookieManager.markCookieFailed('rate_limit_429');
+        if (switchDelay > 0) {
+          await new Promise(resolve => setTimeout(resolve, switchDelay));
+        }
+        
+        // If we have more cookies, try next cookie
+        if (cookieAttempt < maxCookieAttempts - 1) {
+          console.log(`🔄 [GraphQL] Switching to next cookie and retrying...`);
+          continue; // Try next cookie
+        }
+        
+        // Last cookie - retry with exponential backoff
+        if (retryCount < MAX_RETRIES) {
+          const waitTime = RATE_LIMIT_RETRY_DELAY * (retryCount + 1); // Exponential backoff
+          console.log(`   ⚠️  [GraphQL] Rate limited for ${shortcode}! Waiting ${waitTime / 1000}s before retry ${retryCount + 1}/${MAX_RETRIES}...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          return fetchReelData(shortcode, retryCount + 1);
+        } else {
+          throw new Error(`Rate limited (HTTP 429) - Max retries exceeded for ${shortcode}`);
+        }
+      }
+
+      // Handle 401 (authentication/rate limit related) - switch cookie
+      if (response.status === 401) {
+        const errorData = await response.json().catch(() => ({}));
+        console.warn(`🚫 [GraphQL] Auth/rate limit (401) for ${shortcode} with cookie ${cookieManager.getStatus().currentCookie}`);
+        
+        // Mark cookie as failed and switch
+        const switchDelay = cookieManager.markCookieFailed('auth_failed_401');
+        if (switchDelay > 0) {
+          await new Promise(resolve => setTimeout(resolve, switchDelay));
+        }
+        
+        // If we have more cookies, try next cookie
+        if (cookieAttempt < maxCookieAttempts - 1) {
+          console.log(`🔄 [GraphQL] Switching to next cookie and retrying...`);
+          continue; // Try next cookie
+        }
+        
+        throw new Error(`Instagram rate limit: ${errorData.message || 'Please wait a few minutes before trying again'}`);
+      }
+
+      if (!response.ok) {
+        const text = await response.text();
+        // Check if response indicates rate limiting - switch cookie
+        if (response.status === 403 || (text.includes('rate limit') || text.includes('too many'))) {
+          console.warn(`🚫 [GraphQL] Rate limit detected (${response.status}) for ${shortcode} with cookie ${cookieManager.getStatus().currentCookie}`);
+          
+          // Mark cookie as failed and switch
+          const switchDelay = cookieManager.markCookieFailed('rate_limit_403');
+          if (switchDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, switchDelay));
+          }
+          
+          // If we have more cookies, try next cookie
+          if (cookieAttempt < maxCookieAttempts - 1) {
+            console.log(`🔄 [GraphQL] Switching to next cookie and retrying...`);
+            continue; // Try next cookie
+          }
+          
+          throw new Error(`Instagram rate limit: ${text.substring(0, 200)}`);
+        }
+        throw new Error(`Instagram reel lookup failed with ${response.status}: ${text.substring(0, 200)}`);
+      }
+
+      // Success - mark cookie as working and parse response
+      cookieManager.markCookieSuccess();
+      const json = await response.json();
+      const items = json?.data?.xdt_shortcode_media;
+      
+      if (!items) {
+        // Log the response structure for debugging
+        console.warn(`   ⚠️  [GraphQL] Response structure for ${shortcode}:`, JSON.stringify(json, null, 2).substring(0, 1000));
+        throw new Error("Unable to locate reel data in response.");
+      }
+
+      // Format timestamp to readable date
+      const timestamp = items.taken_at_timestamp;
+      let postedDate = null;
+      let postedDateFormatted = null;
+      
+      if (timestamp) {
+        postedDate = new Date(timestamp * 1000); // Convert Unix timestamp to Date
+        postedDateFormatted = postedDate.toISOString();
+      }
+
+      // Extract analytics data - use EXACT same format as new/index.js with optional chaining
+      // Views and duration - use optional chaining exactly like reference code
+      const videoViewCount = items?.video_view_count ?? null;
+      const videoPlayCount = items?.video_play_count ?? null;
+      const videoDuration = items?.video_duration ?? null;
+      
+      // Likes - check multiple paths with optional chaining (Instagram can have likes in different places)
+      // For reels, likes might be in edge_media_preview_like or edge_liked_by
+      let likeCount = null;
+      
+      // Check edge_media_preview_like first (most common for posts/reels)
+      if (items?.edge_media_preview_like) {
+        if (typeof items.edge_media_preview_like === 'object' && items.edge_media_preview_like.count !== undefined) {
+          likeCount = items.edge_media_preview_like.count;
+        } else if (typeof items.edge_media_preview_like === 'number') {
+          likeCount = items.edge_media_preview_like;
+        }
+      }
+      
+      // Check edge_liked_by (alternative location)
+      if (likeCount === null && items?.edge_liked_by) {
+        if (typeof items.edge_liked_by === 'object' && items.edge_liked_by.count !== undefined) {
+          likeCount = items.edge_liked_by.count;
+        } else if (typeof items.edge_liked_by === 'number') {
+          likeCount = items.edge_liked_by;
+        }
+      }
+      
+      // Check direct like_count field
+      if (likeCount === null && items?.like_count !== undefined && items?.like_count !== null) {
+        likeCount = items.like_count;
+      }
+      
+      // Ensure likeCount is a valid number (not negative, unless Instagram actually returns negative)
+      if (likeCount !== null && (typeof likeCount !== 'number' || likeCount < 0)) {
+        // If it's negative or not a number, set to null (Instagram shouldn't return negative likes)
+        if (likeCount < 0) {
+          console.warn(`   ⚠️  [GraphQL] Invalid like count (negative) for ${shortcode}: ${likeCount}, setting to null`);
+        }
+        likeCount = null;
+      }
+      
+      // Comments - check multiple paths (similar to likes)
+      let commentCount = null;
+      
+      // Check edge_media_to_comment first (most common)
+      if (items?.edge_media_to_comment) {
+        if (typeof items.edge_media_to_comment === 'object' && items.edge_media_to_comment.count !== undefined) {
+          commentCount = items.edge_media_to_comment.count;
+        } else if (typeof items.edge_media_to_comment === 'number') {
+          commentCount = items.edge_media_to_comment;
+        }
+      }
+      
+      // Check direct comment_count field
+      if (commentCount === null && items?.comment_count !== undefined && items?.comment_count !== null) {
+        commentCount = items.comment_count;
+      }
+      
+      // Ensure commentCount is a valid number (not negative)
+      if (commentCount !== null && (typeof commentCount !== 'number' || commentCount < 0)) {
+        if (commentCount < 0) {
+          console.warn(`   ⚠️  [GraphQL] Invalid comment count (negative) for ${shortcode}: ${commentCount}, setting to null`);
+        }
+        commentCount = null;
+      }
+      
+      // Debug logging if likes/comments are missing - log the actual response structure
+      if (likeCount === null) {
+        const likeFields = Object.keys(items).filter(k => k.toLowerCase().includes('like'));
+        console.warn(`   ⚠️  [GraphQL] Like count not found for ${shortcode}`);
+        if (likeFields.length > 0) {
+          console.warn(`   📋 Available like-related fields: ${likeFields.join(', ')}`);
+          // Log the actual structure of like fields
+          likeFields.forEach(field => {
+            console.warn(`      ${field}:`, JSON.stringify(items[field]).substring(0, 200));
+          });
+        }
       } else {
-        throw new Error(`Rate limited (HTTP 429) - Max retries exceeded for ${shortcode}`);
+        console.log(`   ✅ [GraphQL] Like count found for ${shortcode}: ${likeCount}`);
       }
-    }
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Instagram reel lookup failed with ${response.status}: ${text.substring(0, 200)}`);
-    }
-
-    const json = await response.json();
-    const items = json?.data?.xdt_shortcode_media;
-    
-    if (!items) {
-      // Log the response structure for debugging
-      console.warn(`   ⚠️  [GraphQL] Response structure for ${shortcode}:`, JSON.stringify(json, null, 2).substring(0, 1000));
-      throw new Error("Unable to locate reel data in response.");
-    }
-
-    // Format timestamp to readable date
-    const timestamp = items.taken_at_timestamp;
-    let postedDate = null;
-    let postedDateFormatted = null;
-    
-    if (timestamp) {
-      postedDate = new Date(timestamp * 1000); // Convert Unix timestamp to Date
-      postedDateFormatted = postedDate.toISOString();
-    }
-
-    // Extract analytics data - use EXACT same format as new/index.js with optional chaining
-    // Views and duration - use optional chaining exactly like reference code
-    const videoViewCount = items?.video_view_count ?? null;
-    const videoPlayCount = items?.video_play_count ?? null;
-    const videoDuration = items?.video_duration ?? null;
-    
-    // Likes - check multiple paths with optional chaining (Instagram can have likes in different places)
-    // For reels, likes might be in edge_media_preview_like or edge_liked_by
-    let likeCount = null;
-    
-    // Check edge_media_preview_like first (most common for posts/reels)
-    if (items?.edge_media_preview_like) {
-      if (typeof items.edge_media_preview_like === 'object' && items.edge_media_preview_like.count !== undefined) {
-        likeCount = items.edge_media_preview_like.count;
-      } else if (typeof items.edge_media_preview_like === 'number') {
-        likeCount = items.edge_media_preview_like;
+      // Return data matching user's EXACT format from new/index.js + database fields
+      return {
+        __typename: items?.__typename,
+        shortcode: items?.shortcode,
+        dimensions: items?.dimensions,
+        display_url: items?.display_url,
+        display_resources: items?.display_resources,
+        has_audio: items?.has_audio,
+        video_url: items?.video_url,
+        video_view_count: videoViewCount, // Use extracted value
+        video_play_count: videoPlayCount, // Use extracted value
+        is_video: items?.is_video,
+        caption: items?.edge_media_to_caption?.edges?.[0]?.node?.text || null,
+        is_paid_partnership: items?.is_paid_partnership,
+        location: items?.location,
+        owner: items?.owner,
+        product_type: items?.product_type,
+        video_duration: videoDuration, // Use extracted value
+        thumbnail_src: items?.thumbnail_src,
+        clips_music_attribution_info: items?.clips_music_attribution_info,
+        sidecar: items?.edge_sidecar_to_children?.edges,
+        // Additional fields for database (using extracted values)
+        taken_at_timestamp: timestamp,
+        posted_date: postedDateFormatted,
+        posted_date_readable: postedDate ? postedDate.toLocaleString() : null,
+        view_count: videoPlayCount ?? videoViewCount, // Use video_play_count (more accurate for reels)
+        like_count: likeCount,
+        comment_count: commentCount,
+        average_watch_time: null // Not available in public API
+      };
+    } catch (error) {
+      // Check if it's a rate limit error that we should retry with different cookie
+      if (error.message?.includes('rate limit') || error.message?.includes('429') || error.message?.includes('401') || error.message?.includes('403')) {
+        if (cookieAttempt < maxCookieAttempts - 1) {
+          // Mark cookie as failed
+          const switchDelay = cookieManager.markCookieFailed('rate_limit_error');
+          if (switchDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, switchDelay));
+          }
+          continue; // Try next cookie
+        }
+      }
+      
+      // Last cookie or non-rate-limit error - throw
+      if (cookieAttempt === maxCookieAttempts - 1) {
+        throw error;
       }
     }
-    
-    // Check edge_liked_by (alternative location)
-    if (likeCount === null && items?.edge_liked_by) {
-      if (typeof items.edge_liked_by === 'object' && items.edge_liked_by.count !== undefined) {
-        likeCount = items.edge_liked_by.count;
-      } else if (typeof items.edge_liked_by === 'number') {
-        likeCount = items.edge_liked_by;
-      }
-    }
-    
-    // Check direct like_count field
-    if (likeCount === null && items?.like_count !== undefined && items?.like_count !== null) {
-      likeCount = items.like_count;
-    }
-    
-    // Ensure likeCount is a valid number (not negative, unless Instagram actually returns negative)
-    if (likeCount !== null && (typeof likeCount !== 'number' || likeCount < 0)) {
-      // If it's negative or not a number, set to null (Instagram shouldn't return negative likes)
-      if (likeCount < 0) {
-        console.warn(`   ⚠️  [GraphQL] Invalid like count (negative) for ${shortcode}: ${likeCount}, setting to null`);
-      }
-      likeCount = null;
-    }
-    
-    // Comments - check multiple paths (similar to likes)
-    let commentCount = null;
-    
-    // Check edge_media_to_comment first (most common)
-    if (items?.edge_media_to_comment) {
-      if (typeof items.edge_media_to_comment === 'object' && items.edge_media_to_comment.count !== undefined) {
-        commentCount = items.edge_media_to_comment.count;
-      } else if (typeof items.edge_media_to_comment === 'number') {
-        commentCount = items.edge_media_to_comment;
-      }
-    }
-    
-    // Check direct comment_count field
-    if (commentCount === null && items?.comment_count !== undefined && items?.comment_count !== null) {
-      commentCount = items.comment_count;
-    }
-    
-    // Ensure commentCount is a valid number (not negative)
-    if (commentCount !== null && (typeof commentCount !== 'number' || commentCount < 0)) {
-      if (commentCount < 0) {
-        console.warn(`   ⚠️  [GraphQL] Invalid comment count (negative) for ${shortcode}: ${commentCount}, setting to null`);
-      }
-      commentCount = null;
-    }
-    
-    // Debug logging if likes/comments are missing - log the actual response structure
-    if (likeCount === null) {
-      const likeFields = Object.keys(items).filter(k => k.toLowerCase().includes('like'));
-      console.warn(`   ⚠️  [GraphQL] Like count not found for ${shortcode}`);
-      if (likeFields.length > 0) {
-        console.warn(`   📋 Available like-related fields: ${likeFields.join(', ')}`);
-        // Log the actual structure of like fields
-        likeFields.forEach(field => {
-          console.warn(`      ${field}:`, JSON.stringify(items[field]).substring(0, 200));
-        });
-      }
-    } else {
-      console.log(`   ✅ [GraphQL] Like count found for ${shortcode}: ${likeCount}`);
-    }
-
-    // Return data matching user's EXACT format from new/index.js + database fields
-    return {
-      __typename: items?.__typename,
-      shortcode: items?.shortcode,
-      dimensions: items?.dimensions,
-      display_url: items?.display_url,
-      display_resources: items?.display_resources,
-      has_audio: items?.has_audio,
-      video_url: items?.video_url,
-      video_view_count: videoViewCount, // Use extracted value
-      video_play_count: videoPlayCount, // Use extracted value
-      is_video: items?.is_video,
-      caption: items?.edge_media_to_caption?.edges?.[0]?.node?.text || null,
-      is_paid_partnership: items?.is_paid_partnership,
-      location: items?.location,
-      owner: items?.owner,
-      product_type: items?.product_type,
-      video_duration: videoDuration, // Use extracted value
-      thumbnail_src: items?.thumbnail_src,
-      clips_music_attribution_info: items?.clips_music_attribution_info,
-      sidecar: items?.edge_sidecar_to_children?.edges,
-      // Additional fields for database (using extracted values)
-      taken_at_timestamp: timestamp,
-      posted_date: postedDateFormatted,
-      posted_date_readable: postedDate ? postedDate.toLocaleString() : null,
-      view_count: videoPlayCount ?? videoViewCount, // Use video_play_count (more accurate for reels)
-      like_count: likeCount,
-      comment_count: commentCount,
-      average_watch_time: null // Not available in public API
-    };
-  } catch (error) {
-    if (retryCount < MAX_RETRIES && error.message.includes('429')) {
-      // Will be handled by retry logic above
-      throw error;
-    }
-    throw error;
   }
+  
+  // If we get here, all cookies failed
+  // Check if all cookies were rate limited
+  if (cookieManager.areAllCookiesRateLimited()) {
+    const waitTime = cookieManager.getTimeUntilRetry();
+    const waitMinutes = Math.ceil(waitTime / 1000 / 60);
+    throw new Error(`All Instagram cookies are rate limited. Please wait ${waitMinutes} minutes before trying again.`);
+  }
+  
+  throw new Error('Failed to fetch reel data after trying all cookies');
 };
 
 module.exports = {

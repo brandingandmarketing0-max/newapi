@@ -1064,8 +1064,8 @@ const trackProfile = async (username, customTrackingId = null, userId = null) =>
     } else {
       console.log(`   ℹ️  Delta: Not calculated (first tracking, no previous snapshot)`);
     }
-    console.log(`   ✅ Reels: ${shortcodesToProcess.length} items saved/updated in ig_profile_reels`);
-    console.log(`   ✅ Reel Metrics: ${shortcodesToProcess.length} snapshots saved to ig_reel_metrics`);
+    console.log(`   ✅ Reels: ${reelsToProcess.length} items saved/updated in ig_profile_reels`);
+    console.log(`   ✅ Reel Metrics: ${reelsToProcess.length} snapshots saved to ig_reel_metrics`);
     console.log(`   ✅ Daily Metrics: Updated in ig_profile_daily_metrics for ${todayDateString}`);
     console.log(`   ✅ Daily Reel Growth: Views=${totalDailyViewsGrowth > 0 ? '+' : ''}${totalDailyViewsGrowth.toLocaleString()}, Likes=${totalDailyLikesGrowth > 0 ? '+' : ''}${totalDailyLikesGrowth.toLocaleString()}, Comments=${totalDailyCommentsGrowth > 0 ? '+' : ''}${totalDailyCommentsGrowth.toLocaleString()}`);
     console.log(`\n🎯 Next refresh will compare with snapshot ${newSnapshot.id} from the database!\n`);

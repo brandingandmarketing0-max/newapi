@@ -179,23 +179,77 @@ router.post("/", async (req, res) => {
 // POST /profiles/:username/refresh - Refresh tracking data (runs immediately via queue)
 router.post("/:username/refresh", async (req, res) => {
   const { username } = req.params;
+  const { wait = 'true' } = req.query; // Optional: wait for completion (default: true)
+  
   try {
-    console.log(`\n📥 [API] POST /profiles/${username}/refresh - Adding to queue for immediate refresh...`);
+    console.log(`\n📥 [API] POST /profiles/${username}/refresh - Manual refresh requested`);
+    console.log(`   Wait for completion: ${wait === 'true'}`);
+    
+    // Check if profile exists first
+    const { data: existingProfile } = await supabase
+      .from("ig_profiles")
+      .select("tracking_id, username, id")
+      .eq("username", username)
+      .maybeSingle();
+    
+    if (!existingProfile) {
+      return res.status(404).json({ error: `Profile ${username} not found. Please add it first.` });
+    }
     
     // Add job to queue with immediate flag
-    const result = await addJob(username, true);
+    const jobPromise = addJob(username, true);
     
+    if (wait === 'false') {
+      // Return immediately without waiting
+      console.log(`✅ [API] Refresh job queued for ${username} (returning immediately)`);
+      return res.json({ 
+        message: "Refresh job queued successfully",
+        username,
+        tracking_id: existingProfile.tracking_id,
+        status: "queued"
+      });
+    }
+    
+    // Wait for job to complete
+    console.log(`⏳ [API] Waiting for refresh job to complete for ${username}...`);
+    const result = await jobPromise;
+    
+    // Get updated profile with tracking_id
     const { data: profile } = await supabase
       .from("ig_profiles")
-      .select("tracking_id, username")
-      .eq("id", result.profile.id)
+      .select("tracking_id, username, id")
+      .eq("username", username)
       .single();
     
     console.log(`✅ [API] Profile ${username} refreshed successfully`);
-    res.json({ ...result, tracking_id: profile?.tracking_id });
+    res.json({ 
+      message: "Profile refreshed successfully",
+      username,
+      tracking_id: profile?.tracking_id,
+      profile: result.profile,
+      snapshot: result.snapshot,
+      status: "completed"
+    });
   } catch (err) {
     console.error(`❌ [API] Failed to refresh ${username}:`, err.message);
-    res.status(500).json({ error: err.message });
+    
+    // Check if it's a rate limit error
+    const isRateLimitError = err.message?.toLowerCase().includes('rate limit') || 
+                             err.message?.toLowerCase().includes('429') ||
+                             err.message?.toLowerCase().includes('too many requests');
+    
+    if (isRateLimitError) {
+      return res.status(429).json({ 
+        error: err.message,
+        status: "rate_limited",
+        retry_after: "30-60 minutes"
+      });
+    }
+    
+    res.status(500).json({ 
+      error: err.message,
+      status: "error"
+    });
   }
 });
 

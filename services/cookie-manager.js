@@ -17,10 +17,17 @@ class CookieManager {
     this.currentIndex = 0;
     this.failedCookies = new Set(); // Track cookies that failed
     this.cookieFailureCount = new Map(); // Track failure count per cookie
+    this.cookieFailureTime = new Map(); // Track when each cookie failed (for auto-reset)
     this.lastSwitchTime = 0;
     this.switchDelay = 60000; // 1 minute delay before switching cookies
+    this.cookieResetTime = 60 * 60 * 1000; // Reset cookie failures after 60 minutes
     
     this.loadCookies();
+    
+    // Auto-reset failed cookies periodically
+    setInterval(() => {
+      this.autoResetFailedCookies();
+    }, 5 * 60 * 1000); // Check every 5 minutes
   }
 
   /**
@@ -94,6 +101,7 @@ class CookieManager {
     const cookieId = this.currentIndex;
     const failureCount = (this.cookieFailureCount.get(cookieId) || 0) + 1;
     this.cookieFailureCount.set(cookieId, failureCount);
+    this.cookieFailureTime.set(cookieId, Date.now()); // Record failure time
 
     console.log(`🚫 [Cookie Manager] Cookie ${cookieId + 1} failed (${reason}) - Failure count: ${failureCount}`);
     
@@ -180,11 +188,66 @@ class CookieManager {
   }
 
   /**
+   * Auto-reset cookies that failed more than cookieResetTime ago
+   */
+  autoResetFailedCookies() {
+    const now = Date.now();
+    let resetCount = 0;
+    
+    for (const [cookieId, failureTime] of this.cookieFailureTime.entries()) {
+      if (now - failureTime >= this.cookieResetTime) {
+        // Reset this cookie - it's been long enough
+        this.failedCookies.delete(cookieId);
+        this.cookieFailureCount.delete(cookieId);
+        this.cookieFailureTime.delete(cookieId);
+        resetCount++;
+      }
+    }
+    
+    if (resetCount > 0) {
+      console.log(`🔄 [Cookie Manager] Auto-reset ${resetCount} cookie(s) after ${Math.round(this.cookieResetTime / 1000 / 60)} minutes`);
+    }
+  }
+
+  /**
+   * Check if all cookies are currently rate limited
+   */
+  areAllCookiesRateLimited() {
+    const status = this.getStatus();
+    return status.totalCookies > 0 && 
+           status.totalCookies === status.failedCookies.length &&
+           Object.values(status.failureCounts || {}).every(count => count >= 2);
+  }
+
+  /**
+   * Get time until cookies can be retried (if all are rate limited)
+   */
+  getTimeUntilRetry() {
+    if (!this.areAllCookiesRateLimited()) {
+      return 0;
+    }
+    
+    const now = Date.now();
+    let maxWaitTime = 0;
+    
+    for (const [cookieId, failureTime] of this.cookieFailureTime.entries()) {
+      const timeSinceFailure = now - failureTime;
+      const timeUntilReset = this.cookieResetTime - timeSinceFailure;
+      if (timeUntilReset > maxWaitTime) {
+        maxWaitTime = timeUntilReset;
+      }
+    }
+    
+    return Math.max(0, maxWaitTime);
+  }
+
+  /**
    * Reset all failure tracking (useful for testing or after manual cookie updates)
    */
   reset() {
     this.failedCookies.clear();
     this.cookieFailureCount.clear();
+    this.cookieFailureTime.clear();
     this.currentIndex = 0;
     this.lastSwitchTime = 0;
     console.log(`🔄 [Cookie Manager] Reset - all cookies available again`);

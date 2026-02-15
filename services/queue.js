@@ -185,13 +185,33 @@ const processQueue = async () => {
     if (isRateLimitError) {
       consecutiveRateLimitErrors++;
       lastRateLimitErrorTime = Date.now();
-      const backoffTime = Math.min(
-        MIN_TIME_BETWEEN_JOBS * Math.pow(RATE_LIMIT_BACKOFF_MULTIPLIER, consecutiveRateLimitErrors),
-        MAX_BACKOFF_TIME
-      );
       
-      console.error(`🚫 [QUEUE] Rate limit error for ${nextJob.username} (error #${consecutiveRateLimitErrors}):`, error.message);
-      console.error(`⏸️  [QUEUE] Applying ${Math.round(backoffTime / 1000 / 60)} minute backoff before next job`);
+      // Check if error indicates all cookies are rate limited
+      const allCookiesRateLimited = error.message?.includes('All Instagram cookies are rate limited') || 
+                                     error.message?.includes('All cookies are rate limited');
+      
+      // Use much longer backoff if all cookies are rate limited (30-60 minutes)
+      let backoffTime;
+      if (allCookiesRateLimited) {
+        // When all cookies are rate limited, wait 30-60 minutes
+        backoffTime = Math.min(
+          60 * 60 * 1000, // 60 minutes max
+          Math.max(
+            30 * 60 * 1000, // Minimum 30 minutes
+            MIN_TIME_BETWEEN_JOBS * Math.pow(RATE_LIMIT_BACKOFF_MULTIPLIER, consecutiveRateLimitErrors)
+          )
+        );
+        console.error(`🚫 [QUEUE] ALL COOKIES RATE LIMITED for ${nextJob.username} (error #${consecutiveRateLimitErrors})`);
+        console.error(`⏸️  [QUEUE] Instagram is blocking all requests. Waiting ${Math.round(backoffTime / 1000 / 60)} minutes before retry`);
+        console.error(`💡 [QUEUE] TIP: Consider using cookies from different accounts or reducing request frequency`);
+      } else {
+        backoffTime = Math.min(
+          MIN_TIME_BETWEEN_JOBS * Math.pow(RATE_LIMIT_BACKOFF_MULTIPLIER, consecutiveRateLimitErrors),
+          MAX_BACKOFF_TIME
+        );
+        console.error(`🚫 [QUEUE] Rate limit error for ${nextJob.username} (error #${consecutiveRateLimitErrors}):`, error.message);
+        console.error(`⏸️  [QUEUE] Applying ${Math.round(backoffTime / 1000 / 60)} minute backoff before next job`);
+      }
       
       // Re-queue the job with a delay
       nextJob.completed = false;
